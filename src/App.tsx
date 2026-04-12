@@ -16,7 +16,8 @@ import {
   Trash2,
   Plus,
   Download,
-  Camera
+  Camera,
+  Loader2
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { 
@@ -68,6 +69,7 @@ const App = () => {
   const [checkIns, setCheckIns] = useState<any[]>([]); 
   const [showSuccess, setShowSuccess] = useState(false);
   const [user, setUser] = useState<any>(null);
+  const [isExporting, setIsExporting] = useState(false); // Thêm trạng thái tải ảnh
 
   // --- ADMIN STATE ---
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
@@ -412,41 +414,67 @@ const App = () => {
   };
 
   const exportChartImage = async () => {
+    if (isExporting) return;
+    
     const chartEl = document.getElementById('admin-chart-container');
-    if (!chartEl) return;
+    if (!chartEl) {
+      alert("Không tìm thấy biểu đồ để xuất.");
+      return;
+    }
 
-    // Hàm thực hiện việc vẽ và tải ảnh
+    setIsExporting(true);
+
     const processExport = async () => {
       try {
         const canvas = await (w as any).html2canvas(chartEl, { 
           backgroundColor: '#0f172a', 
-          scale: 2, // Tăng độ nét gấp đôi
-          useCORS: true, // Cho phép tải ảnh ngoại lai nếu có
+          scale: 2, 
+          useCORS: true, 
           logging: false
         });
         
-        const link = document.createElement('a');
-        link.download = `BieuDoThongKe_${new Date().toLocaleDateString('vi-VN').replace(/\//g, '-')}.png`;
-        link.href = canvas.toDataURL('image/png');
+        // Sử dụng Blob thay vì DataURL để an toàn hơn với trình duyệt
+        canvas.toBlob((blob: Blob | null) => {
+          if (!blob) {
+            alert("Lỗi tạo ảnh. Vui lòng thử lại.");
+            setIsExporting(false);
+            return;
+          }
+          
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.download = `BieuDoThongKe_${new Date().toLocaleDateString('vi-VN').replace(/\//g, '-')}.png`;
+          link.href = url;
+          
+          document.body.appendChild(link);
+          link.click();
+          
+          // Dọn dẹp bộ nhớ
+          setTimeout(() => {
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+            setIsExporting(false);
+          }, 100);
+        }, 'image/png');
         
-        // BẮT BUỘC: Phải gắn link vào body thì một số trình duyệt mới cho phép tải file
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link); // Tải xong thì dọn dẹp
       } catch (error) {
         console.error("Lỗi khi xuất ảnh biểu đồ:", error);
+        alert("Có lỗi xảy ra khi lưu ảnh!");
+        setIsExporting(false);
       }
     };
 
-    // Kiểm tra xem thư viện html2canvas đã được tải vào web chưa
+    // Tải html2canvas nếu chưa có
     if (typeof (w as any).html2canvas !== 'undefined') {
       processExport();
     } else {
-      // Nếu chưa có, tiến hành nhúng script thư viện vào trang
       const script = document.createElement('script');
       script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
       script.onload = () => processExport();
-      script.onerror = () => alert("Lỗi mạng: Không thể tải công cụ xuất ảnh.");
+      script.onerror = () => {
+        alert("Lỗi mạng: Không thể tải công cụ xuất ảnh.");
+        setIsExporting(false);
+      };
       document.head.appendChild(script);
     }
   };
@@ -948,10 +976,17 @@ const App = () => {
                           </div>
                           <button
                             onClick={exportChartImage}
-                            className="flex items-center space-x-1 px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white rounded-md text-sm font-medium transition-colors shadow-sm"
+                            disabled={isExporting}
+                            className={`flex items-center space-x-1 px-3 py-1.5 rounded-md text-sm font-medium transition-colors shadow-sm ${
+                              isExporting 
+                                ? 'bg-slate-600 cursor-wait text-slate-300' 
+                                : 'bg-slate-800 hover:bg-slate-900 text-white'
+                            }`}
                           >
-                            <Camera size={16} />
-                            <span className="hidden sm:inline">Lưu ảnh biểu đồ</span>
+                            {isExporting ? <Loader2 size={16} className="animate-spin" /> : <Camera size={16} />}
+                            <span className="hidden sm:inline">
+                              {isExporting ? 'Đang tải về...' : 'Lưu ảnh biểu đồ'}
+                            </span>
                           </button>
                         </div>
                         
