@@ -1,82 +1,64 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import {
-  Building2,
-  User,
-  Phone,
-  Users,
-  CalendarClock,
-  CheckCircle2,
-  ListOrdered,
+import { 
+  Building2, 
+  User, 
+  Phone, 
+  Users, 
+  CalendarClock, 
+  CheckCircle2, 
+  ListOrdered, 
   ChevronRight,
   ShieldCheck,
   Lock,
-  Filter,
   BarChart3,
   CalendarDays,
   Settings,
   Trash2,
   Plus,
   Download,
-  Camera,
+  Camera
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
-import {
-  getAuth,
-  signInWithCustomToken,
-  signInAnonymously,
-  onAuthStateChanged,
-  GoogleAuthProvider,
-  signInWithPopup,
-  signOut,
-} from 'firebase/auth';
-import {
-  getFirestore,
-  collection,
-  addDoc,
-  onSnapshot,
-} from 'firebase/firestore';
+import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
+import { getFirestore, collection, addDoc, onSnapshot } from 'firebase/firestore';
 
 // === CẤU HÌNH CƠ BẢN (THAY ĐỔI TẠI ĐÂY) ===
-// 1. Thay đổi email quản trị viên mặc định:
-const ROOT_ADMIN_EMAIL = 'minhpv@thangloigroup.vn';
+const ROOT_ADMIN_EMAIL = 'minhpv@thangloigroup.vn'; 
+const BANNER_IMAGE_URL = 'https://i.postimg.cc/7hQSRb42/660431692-122180502596789445-5003665343564458581-n.jpg';
 
-// 2. Thay đổi link ảnh bìa:
-const BANNER_IMAGE_URL =
-  'https://i.postimg.cc/7hQSRb42/660431692-122180502596789445-5003665343564458581-n.jpg';
-
-// 3. Cấu hình Firebase CỦA BẠN (Dùng khi đưa lên Vercel/Github):
-// Ở bước đưa app lên mạng, bạn cần lấy mã cấu hình từ Firebase Console dán vào đây:
 const MY_FIREBASE_CONFIG = {
-  apiKey: 'AIzaSyC6Lr-MmSHB2MsrOjlod_IaDDR_SoLxlZE',
-  authDomain: 'gallerycheckin-f6428.firebaseapp.com',
-  projectId: 'gallerycheckin-f6428',
-  storageBucket: 'gallerycheckin-f6428.firebasestorage.app',
-  messagingSenderId: '174212194011',
-  appId: '1:174212194011:web:e15d6844ef11b4f71476fe',
+  apiKey: "AIzaSyC6Lr-MmSHB2MsrOjlod_IaDDR_SoLxlZE",
+  authDomain: "gallerycheckin-f6428.firebaseapp.com",
+  projectId: "gallerycheckin-f6428",
+  storageBucket: "gallerycheckin-f6428.firebasestorage.app",
+  messagingSenderId: "174212194011",
+  appId: "1:174212194011:web:e15d6844ef11b4f71476fe"
 };
 // ===========================================
 
-// --- KHỞI TẠO FIREBASE ONLINE ---
-const isCanvasEnv = typeof __firebase_config !== 'undefined';
-// Tự động dùng môi trường test của hệ thống nếu bạn đang xem ở đây, nếu đưa lên mạng sẽ dùng Cấu hình Của Bạn
-const firebaseConfig = isCanvasEnv ? JSON.parse(__firebase_config) : MY_FIREBASE_CONFIG;
+// --- KHỞI TẠO FIREBASE ONLINE & XỬ LÝ TYPESCRIPT ---
+// Ép kiểu window thành any để bypass lỗi TypeScript khi gọi biến hệ thống
+const w = window as any; 
+const isCanvasEnv = typeof w.__firebase_config !== 'undefined';
+const firebaseConfig = isCanvasEnv ? JSON.parse(w.__firebase_config) : MY_FIREBASE_CONFIG;
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+const appId = typeof w.__app_id !== 'undefined' ? w.__app_id : 'default-app-id';
 
 const App = () => {
-  const [activeTab, setActiveTab] = useState('checkin'); // 'checkin', 'admin'
-  const [checkIns, setCheckIns] = useState([]); // Chuyển sang dùng mảng rỗng chờ tải từ mạng
+  const [activeTab, setActiveTab] = useState('checkin');
+  const [checkIns, setCheckIns] = useState<any[]>([]); 
   const [showSuccess, setShowSuccess] = useState(false);
-  const [user, setUser] = useState(null);
+  const [user, setUser] = useState<any>(null);
 
   // --- FIREBASE KẾT NỐI & TẢI DỮ LIỆU ---
   useEffect(() => {
     const initAuth = async () => {
       try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
+        const initToken = w.__initial_auth_token;
+        if (typeof initToken !== 'undefined' && initToken) {
+          await signInWithCustomToken(auth, initToken);
         } else {
           await signInAnonymously(auth);
         }
@@ -86,25 +68,25 @@ const App = () => {
     };
     if (firebaseConfig.apiKey) initAuth();
     
-    const unsubscribe = onAuthStateChanged(auth, setUser);
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+    });
     return () => unsubscribe();
   }, []);
 
   useEffect(() => {
     if (!user && firebaseConfig.apiKey) return; 
-    if (!firebaseConfig.apiKey) return; // Nếu chưa có API key ở file thật thì ngừng chạy tránh lỗi
+    if (!firebaseConfig.apiKey) return; 
 
-    // Kết nối vào Data Collection của bạn
     const collectionPath = isCanvasEnv 
         ? collection(db, 'artifacts', appId, 'public', 'data', 'gallery_checkins')
         : collection(db, 'gallery_checkins');
 
     const unsubscribe = onSnapshot(collectionPath, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      // Sắp xếp ID lớn (mới nhất) lên đầu
-      data.sort((a, b) => b.id - a.id); 
+      const data = snapshot.docs.map((doc: any) => ({ firebaseId: doc.id, ...doc.data() }));
+      data.sort((a: any, b: any) => b.id - a.id); 
       setCheckIns(data);
-    }, (error) => {
+    }, (error: any) => {
       console.error("Lỗi đồng bộ dữ liệu Firestore:", error);
     });
     
@@ -130,18 +112,16 @@ const App = () => {
   const [adminEmail, setAdminEmail] = useState('');
   const [adminError, setAdminError] = useState('');
   
-  // Quản lý danh sách Admins (Khởi tạo với email mặc định)
-  const [adminList, setAdminList] = useState([ROOT_ADMIN_EMAIL]);
+  const [adminList, setAdminList] = useState<string[]>([ROOT_ADMIN_EMAIL]);
   const [newAdminEmail, setNewAdminEmail] = useState('');
 
-  // Admin Dashboard States
-  const [adminSubTab, setAdminSubTab] = useState('list'); // 'list', 'chart', 'settings'
+  const [adminSubTab, setAdminSubTab] = useState('list'); 
   const [chartView, setChartView] = useState('day'); 
   const [filterDate, setFilterDate] = useState(''); 
   const [filterType, setFilterType] = useState('all'); 
 
   // --- HANDLERS ---
-  const handleInputChange = (e) => {
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
     if ((name === 'staffPhone' || name === 'customerPhone')) {
       const regex = /^[0-9]{0,4}$/;
@@ -150,7 +130,7 @@ const App = () => {
     setFormData({ ...formData, [name]: value });
   };
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
     const today = new Date();
@@ -165,8 +145,8 @@ const App = () => {
       customerName: hasCustomer ? formData.customerName : '',
       customerPhone: hasCustomer ? formData.customerPhone : '',
       customerAge: hasCustomer ? formData.customerAge : '',
-      customerCount: hasCustomer ? parseInt(formData.customerCount) || 0 : 0,
-      staffCount: parseInt(formData.staffCount) || 1,
+      customerCount: hasCustomer ? parseInt(String(formData.customerCount)) || 0 : 0,
+      staffCount: parseInt(String(formData.staffCount)) || 1,
     };
 
     if(!firebaseConfig.apiKey) {
@@ -179,7 +159,6 @@ const App = () => {
           ? collection(db, 'artifacts', appId, 'public', 'data', 'gallery_checkins')
           : collection(db, 'gallery_checkins');
           
-      // Ghi dữ liệu lên Cloud
       await addDoc(collectionPath, newCheckIn);
       
       setShowSuccess(true);
@@ -189,7 +168,7 @@ const App = () => {
       setTimeout(() => {
         setShowSuccess(false);
       }, 3000);
-    } catch(error) {
+    } catch(error: any) {
       alert("Đã xảy ra lỗi khi lưu dữ liệu lên mạng: " + error.message);
     }
   };
@@ -197,26 +176,22 @@ const App = () => {
   const handleGoogleLogin = async () => {
     setAdminError('');
     
-    // NẾU ĐANG LÀ MÔI TRƯỜNG TEST TRÊN WEB NÀY (Giả lập đăng nhập để xem giao diện)
     if (isCanvasEnv || !firebaseConfig.apiKey) {
       setIsAdminLoggedIn(true);
       setAdminEmail(ROOT_ADMIN_EMAIL);
       return;
     }
 
-    // NẾU ĐÃ ĐƯA LÊN MẠNG BẰNG FIREBASE CỦA BẠN
     try {
       const provider = new GoogleAuthProvider();
       const result = await signInWithPopup(auth, provider);
-      const userEmail = result.user.email;
+      const userEmail = result.user.email || '';
 
-      // Kiểm tra xem email vừa đăng nhập có nằm trong danh sách Admin không
       if (adminList.includes(userEmail)) {
         setIsAdminLoggedIn(true);
         setAdminEmail(userEmail);
       } else {
         setAdminError(`Tài khoản ${userEmail} không có quyền truy cập.`);
-        // Đăng xuất và đưa về lại trạng thái ẩn danh (để còn tiếp tục dùng Form Check-in)
         await signOut(auth);
         await signInAnonymously(auth);
       }
@@ -237,7 +212,7 @@ const App = () => {
     }
   };
 
-  const handleAddAdmin = (e) => {
+  const handleAddAdmin = (e: React.FormEvent) => {
     e.preventDefault();
     if (newAdminEmail && !adminList.includes(newAdminEmail)) {
       setAdminList([...adminList, newAdminEmail]);
@@ -245,7 +220,7 @@ const App = () => {
     }
   };
 
-  const handleRemoveAdmin = (emailToRemove) => {
+  const handleRemoveAdmin = (emailToRemove: string) => {
     if (adminList.length > 1) {
       setAdminList(adminList.filter(email => email !== emailToRemove));
     } else {
@@ -255,7 +230,7 @@ const App = () => {
 
   // --- ADMIN FILTER & CHART LOGIC ---
   const filteredCheckIns = useMemo(() => {
-    return checkIns.filter(item => {
+    return checkIns.filter((item: any) => {
       const matchDate = filterDate ? item.date === filterDate : true;
       let matchType = true;
       if (filterType === 'customer_only') matchType = item.hasCustomer;
@@ -265,23 +240,23 @@ const App = () => {
   }, [checkIns, filterDate, filterType]);
 
   const chartData = useMemo(() => {
-    const dataMap = {};
+    const dataMap: any = {};
     const today = new Date();
     today.setHours(0,0,0,0);
 
-    checkIns.forEach(item => {
+    checkIns.forEach((item: any) => {
       const itemDate = new Date(item.date);
       let key = '';
       let label = '';
 
       if (chartView === 'day') {
-        const diffDays = Math.floor((today - itemDate) / (1000 * 60 * 60 * 24));
+        const diffDays = Math.floor((today.getTime() - itemDate.getTime()) / (1000 * 60 * 60 * 24));
         if (diffDays <= 6 && diffDays >= 0) {
           key = item.date;
           label = `${itemDate.getDate()}/${itemDate.getMonth() + 1}`;
         }
       } else if (chartView === 'week') {
-        const diffDays = Math.floor((today - itemDate) / (1000 * 60 * 60 * 24));
+        const diffDays = Math.floor((today.getTime() - itemDate.getTime()) / (1000 * 60 * 60 * 24));
         if (diffDays <= 27 && diffDays >= 0) {
           const weekNum = Math.floor(diffDays / 7);
           key = `week-${weekNum}`;
@@ -304,15 +279,15 @@ const App = () => {
       }
     });
 
-    return Object.values(dataMap).sort((a, b) => a.rawDate - b.rawDate);
+    return Object.values(dataMap).sort((a: any, b: any) => a.rawDate.getTime() - b.rawDate.getTime());
   }, [checkIns, chartView]);
 
-  const maxChartValue = Math.max(1, ...chartData.map(d => Math.max(d.customers, d.staff)));
+  const maxChartValue = Math.max(1, ...chartData.map((d: any) => Math.max(d.customers, d.staff)));
 
   // --- TÍNH NĂNG EXPORT ---
   const exportToExcel = () => {
     const headers = ['Ngày giờ', 'Đơn vị/Đại lý', 'Họ tên CVKD', 'SĐT CVKD', 'SL CVKD', 'Họ tên Khách', 'SĐT Khách', 'Độ tuổi Khách', 'SL Khách', 'Trạng thái'];
-    const rows = filteredCheckIns.map(item => [
+    const rows = filteredCheckIns.map((item: any) => [
       `"${item.timestamp}"`,
       `"${item.agencyName}"`,
       `"${item.staffName}"`,
@@ -325,7 +300,6 @@ const App = () => {
       `"${item.hasCustomer ? 'Có khách' : 'Không đi cùng khách'}"`
     ]);
     
-    // Thêm ký tự BOM để file Excel không bị lỗi font tiếng Việt
     const csvContent = "\ufeff" + [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
@@ -335,14 +309,12 @@ const App = () => {
   };
 
   const exportChartImage = () => {
-    // Tải động thư viện cắt ảnh html2canvas
     const script = document.createElement('script');
     script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
     script.onload = () => {
       const chartEl = document.getElementById('admin-chart-container');
-      if(chartEl) {
-        // Render biểu đồ thành ảnh sắc nét (scale: 2)
-        window.html2canvas(chartEl, { backgroundColor: '#0f172a', scale: 2 }).then(canvas => {
+      if(chartEl && typeof w.html2canvas !== 'undefined') {
+        w.html2canvas(chartEl, { backgroundColor: '#0f172a', scale: 2 }).then((canvas: any) => {
           const link = document.createElement('a');
           link.download = `BieuDoThongKe_${new Date().toLocaleDateString('vi-VN').replace(/\//g, '-')}.png`;
           link.href = canvas.toDataURL();
@@ -358,13 +330,13 @@ const App = () => {
     const isStaffValid = formData.agencyName.trim() !== '' &&
                          formData.staffName.trim() !== '' &&
                          formData.staffPhone.trim().length === 4 &&
-                         formData.staffCount >= 1;
+                         Number(formData.staffCount) >= 1;
     
     if (!hasCustomer) return isStaffValid;
     
     const isCustomerValid = formData.customerName.trim() !== '' &&
                             formData.customerPhone.trim().length === 4 &&
-                            formData.customerCount >= 1 &&
+                            Number(formData.customerCount) >= 1 &&
                             formData.customerAge !== '';
                             
     return isStaffValid && isCustomerValid;
@@ -376,13 +348,11 @@ const App = () => {
       {/* HEADER MỚI (Màu trắng, Nút cam) */}
       <header className="bg-white shadow-sm sticky top-0 z-20">
         <div className="max-w-5xl mx-auto px-4 h-[72px] flex items-center justify-between">
-          {/* Logo The Win City */}
           <div className="flex items-center space-x-2 text-[#d95d1e]">
             <CalendarDays size={28} />
             <h1 className="text-xl sm:text-2xl font-bold tracking-tight">The Win City</h1>
           </div>
           
-          {/* Navigation */}
           <div className="flex items-center space-x-4 sm:space-x-6">
             <button
               onClick={() => setActiveTab('checkin')}
@@ -417,10 +387,9 @@ const App = () => {
       {/* Main Content */}
       <main className="max-w-5xl mx-auto px-4 py-6">
         
-        {/* TAB 1: CHECK-IN FORM (GIAO DIỆN KHÁCH / CVKD) */}
+        {/* TAB 1: CHECK-IN FORM */}
         {activeTab === 'checkin' && (
           <div className="max-w-4xl mx-auto">
-            {/* THÔNG BÁO THÀNH CÔNG */}
             {showSuccess && (
               <div className="mb-6 p-4 bg-emerald-500/90 backdrop-blur-sm text-white shadow-lg rounded-xl flex items-center space-x-3 animate-in fade-in slide-in-from-top-4 duration-300">
                 <CheckCircle2 size={24} className="text-white" />
@@ -433,20 +402,17 @@ const App = () => {
 
             <div className="bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-100">
               
-              {/* BANNER ẢNH (Chèn vào trong form) */}
               <div 
                 className="w-full h-48 sm:h-72 bg-cover bg-center relative flex items-center justify-center text-center px-4"
                 style={{ backgroundImage: `url('${BANNER_IMAGE_URL}')` }}
               >
-                {/* Lớp phủ (Overlay) */}
                 <div className="absolute inset-0 bg-black/55"></div>
                 
-                {/* Nội dung chữ trên Banner - Ép màu trực tiếp */}
-                <div className="relative z-10 space-y-2 mt-4" style={{ color: '#ffffff' }}>
-                  <h2 className="text-2xl sm:text-4xl font-extrabold tracking-wide uppercase drop-shadow-lg" style={{ color: '#ffffff' }}>
+                <div className="relative z-10 space-y-2 mt-4 text-white" style={{ color: 'white' }}>
+                  <h2 className="text-2xl sm:text-4xl font-extrabold tracking-wide uppercase drop-shadow-lg text-white" style={{ color: 'white' }}>
                     CHECK IN THE WIN CITY GALLERY
                   </h2>
-                  <p className="text-sm sm:text-base md:text-lg font-medium drop-shadow-md px-2" style={{ color: '#f8fafc' }}>
+                  <p className="text-sm sm:text-base md:text-lg font-medium drop-shadow-md px-2 text-white" style={{ color: 'white' }}>
                     Vui lòng điền đầy đủ thông tin để chúng tôi tiếp đón chu đáo
                   </p>
                 </div>
@@ -507,8 +473,8 @@ const App = () => {
                           type="text"
                           name="staffPhone"
                           required
-                          minLength="4"
-                          maxLength="4"
+                          minLength={4}
+                          maxLength={4}
                           value={formData.staffPhone}
                           onChange={handleInputChange}
                           className="w-full pl-10 pr-4 py-3 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#ea580c] focus:border-[#ea580c] transition-colors"
@@ -536,7 +502,6 @@ const App = () => {
                     </div>
                   </div>
 
-                  {/* TÙY CHỌN KHÔNG CÓ KHÁCH */}
                   <div className="mt-6 pt-5 border-t border-slate-200">
                     <label className="flex items-center space-x-3 cursor-pointer group">
                       <div className="relative flex items-center">
@@ -590,8 +555,8 @@ const App = () => {
                             type="text"
                             name="customerPhone"
                             required={hasCustomer}
-                            minLength="4"
-                            maxLength="4"
+                            minLength={4}
+                            maxLength={4}
                             value={formData.customerPhone}
                             onChange={handleInputChange}
                             className="w-full pl-10 pr-4 py-3 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#ea580c] focus:border-[#ea580c] transition-colors"
@@ -647,7 +612,6 @@ const App = () => {
                   </div>
                 )}
 
-                {/* SUBMIT BUTTON */}
                 <div className="pt-4 border-t border-slate-200">
                   <button
                     type="submit"
@@ -666,12 +630,11 @@ const App = () => {
           </div>
         )}
 
-        {/* TAB 2: ADMIN AREA (CHỨA DANH SÁCH, BIỂU ĐỒ, PHÂN QUYỀN) */}
+        {/* TAB 2: ADMIN AREA */}
         {activeTab === 'admin' && (
           <div className="bg-white rounded-2xl shadow-xl border border-slate-100 overflow-hidden min-h-[600px]">
             
             {!isAdminLoggedIn ? (
-              // FORM ĐĂNG NHẬP ADMIN
               <div className="flex flex-col items-center justify-center p-12 h-[500px]">
                 <div className="bg-slate-100 p-4 rounded-full mb-6">
                   <Lock size={48} className="text-slate-600" />
@@ -696,9 +659,7 @@ const App = () => {
                 </div>
               </div>
             ) : (
-              // BẢNG ĐIỀU KHIỂN ADMIN ĐÃ ĐĂNG NHẬP
               <div className="flex flex-col h-full">
-                {/* Admin Sub-Header */}
                 <div className="p-4 bg-slate-900 text-white flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                   <div className="flex items-center space-x-2">
                     <ShieldCheck size={20} className="text-orange-400" />
@@ -736,10 +697,9 @@ const App = () => {
                   </div>
                 </div>
 
-                {/* NỘI DUNG TỪNG TAB TRONG ADMIN */}
                 <div className="p-6 bg-slate-50 flex-1">
                   
-                  {/* SUB-TAB 1: DANH SÁCH VÀ BỘ LỌC */}
+                  {/* SUB-TAB 1: DANH SÁCH */}
                   {adminSubTab === 'list' && (
                     <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
                       <div className="flex flex-col lg:flex-row lg:items-center justify-between p-4 border-b border-slate-200 bg-slate-50 gap-4">
@@ -796,12 +756,12 @@ const App = () => {
                           <tbody className="divide-y divide-slate-100">
                             {filteredCheckIns.length === 0 ? (
                               <tr>
-                                <td colSpan="5" className="px-4 py-8 text-center text-slate-500 italic">
+                                <td colSpan={5} className="px-4 py-8 text-center text-slate-500 italic">
                                   Không tìm thấy dữ liệu.
                                 </td>
                               </tr>
                             ) : (
-                              filteredCheckIns.map((item) => (
+                              filteredCheckIns.map((item: any) => (
                                 <tr key={item.id} className="hover:bg-orange-50/50 transition-colors">
                                   <td className="px-4 py-3 whitespace-nowrap text-slate-600 font-medium text-xs">
                                     {item.timestamp}
@@ -839,7 +799,7 @@ const App = () => {
                     </div>
                   )}
 
-                  {/* SUB-TAB 2: BIỂU ĐỒ THỐNG KÊ */}
+                  {/* SUB-TAB 2: THỐNG KÊ */}
                   {adminSubTab === 'chart' && (
                     <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
                       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 gap-4">
@@ -875,7 +835,6 @@ const App = () => {
                       </div>
 
                       <div id="admin-chart-container" className="relative bg-slate-900 rounded-2xl p-4 sm:p-6 shadow-inner font-mono mt-8 border border-slate-800">
-                        {/* Legend */}
                         <div className="absolute -top-4 right-4 flex space-x-4 text-xs font-medium bg-slate-800 px-4 py-2 rounded-lg border border-slate-700 shadow-lg z-20">
                           <div className="flex items-center space-x-2">
                             <div className="w-3 h-3 bg-gradient-to-t from-orange-600 to-orange-400 rounded-sm shadow-[0_0_8px_rgba(234,88,12,0.8)]"></div>
@@ -893,10 +852,8 @@ const App = () => {
                           </div>
                         ) : (
                           <div className="h-80 flex relative pl-8 pb-8 pt-6">
-                            {/* Y-Axis Label */}
                             <div className="absolute top-0 left-0 text-cyan-500/80 font-bold text-xs uppercase tracking-wider">Số lượng</div>
                             
-                            {/* Y-Axis Marks and Grid */}
                             <div className="absolute top-6 bottom-8 left-0 right-4 flex flex-col justify-between pointer-events-none">
                               {[maxChartValue, Math.ceil(maxChartValue * 0.75), Math.ceil(maxChartValue * 0.5), Math.ceil(maxChartValue * 0.25), 0].map((val, idx) => (
                                 <div key={idx} className="w-full flex items-center relative">
@@ -906,23 +863,19 @@ const App = () => {
                               ))}
                             </div>
 
-                            {/* X & Y Axes Lines */}
                             <div className="absolute bottom-8 left-8 right-4 border-b-2 border-slate-600 shadow-[0_0_10px_rgba(71,85,105,0.5)]"></div>
                             <div className="absolute top-6 bottom-8 left-8 border-l-2 border-slate-600 shadow-[0_0_10px_rgba(71,85,105,0.5)]"></div>
 
-                            {/* Chart Data Bars */}
                             <div className="flex-1 flex items-end justify-around relative z-10 w-full h-full">
-                              {chartData.map(d => (
+                              {chartData.map((d: any) => (
                                 <div key={d.key} className="flex flex-col items-center flex-1 h-full relative group">
                                   <div className="flex items-end justify-center space-x-1 sm:space-x-2 w-full h-full">
-                                    {/* Cột Khách Hàng */}
                                     <div 
                                       style={{ height: `${Math.max((d.customers / maxChartValue) * 100, 2)}%` }} 
                                       className="w-full max-w-[16px] sm:max-w-[32px] rounded-t-md relative bg-gradient-to-t from-orange-600 to-orange-400 shadow-[0_0_12px_rgba(234,88,12,0.6)] group-hover:brightness-125 transition-all"
                                     >
                                       <span className="absolute -top-6 left-1/2 transform -translate-x-1/2 text-[11px] sm:text-xs font-bold text-orange-400 drop-shadow-md">{d.customers}</span>
                                     </div>
-                                    {/* Cột CVKD */}
                                     <div 
                                       style={{ height: `${Math.max((d.staff / maxChartValue) * 100, 2)}%` }} 
                                       className="w-full max-w-[16px] sm:max-w-[32px] rounded-t-md relative bg-gradient-to-t from-cyan-600 to-cyan-400 shadow-[0_0_12px_rgba(6,182,212,0.6)] group-hover:brightness-125 transition-all"
@@ -930,7 +883,6 @@ const App = () => {
                                       <span className="absolute -top-6 left-1/2 transform -translate-x-1/2 text-[11px] sm:text-xs font-bold text-cyan-400 drop-shadow-md">{d.staff}</span>
                                     </div>
                                   </div>
-                                  {/* X-axis label */}
                                   <span className="absolute -bottom-7 text-[10px] sm:text-xs font-medium text-slate-400 whitespace-nowrap">{d.label}</span>
                                 </div>
                               ))}
@@ -941,7 +893,7 @@ const App = () => {
                     </div>
                   )}
 
-                  {/* SUB-TAB 3: PHÂN QUYỀN ADMIN */}
+                  {/* SUB-TAB 3: PHÂN QUYỀN */}
                   {adminSubTab === 'settings' && adminEmail === ROOT_ADMIN_EMAIL && (
                     <div className="max-w-2xl mx-auto">
                       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
@@ -951,7 +903,6 @@ const App = () => {
                         </div>
                         
                         <div className="p-6 space-y-6">
-                          {/* Form thêm admin mới */}
                           <form onSubmit={handleAddAdmin} className="flex gap-3">
                             <input
                               type="email"
@@ -970,7 +921,6 @@ const App = () => {
                             </button>
                           </form>
 
-                          {/* Danh sách Admin hiện tại */}
                           <div className="border border-slate-200 rounded-lg overflow-hidden">
                             <ul className="divide-y divide-slate-100">
                               {adminList.map((email, index) => (
