@@ -384,7 +384,8 @@ const App = () => {
     return Object.values(dataMap).sort((a: any, b: any) => a.sortIndex - b.sortIndex);
   }, [checkIns, chartView]);
 
-  const maxChartValue = Math.max(5, ...chartData.map((d: any) => Math.max(d.customers, d.staff)));
+  const baseMax = Math.max(5, ...chartData.map((d: any) => Math.max(d.customers, d.staff)));
+  const maxChartValue = Math.ceil(baseMax * 1.2); // Tăng đỉnh trục Y thêm 20% để tạo khoảng trống phía trên
 
   // --- TÍNH NĂNG EXPORT ---
   const exportToExcel = () => {
@@ -410,21 +411,44 @@ const App = () => {
     link.click();
   };
 
-  const exportChartImage = () => {
-    const script = document.createElement('script');
-    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
-    script.onload = () => {
-      const chartEl = document.getElementById('admin-chart-container');
-      if(chartEl && typeof w.html2canvas !== 'undefined') {
-        w.html2canvas(chartEl, { backgroundColor: '#0f172a', scale: 2 }).then((canvas: any) => {
-          const link = document.createElement('a');
-          link.download = `BieuDoThongKe_${new Date().toLocaleDateString('vi-VN').replace(/\//g, '-')}.png`;
-          link.href = canvas.toDataURL();
-          link.click();
+  const exportChartImage = async () => {
+    const chartEl = document.getElementById('admin-chart-container');
+    if (!chartEl) return;
+
+    // Hàm thực hiện việc vẽ và tải ảnh
+    const processExport = async () => {
+      try {
+        const canvas = await (w as any).html2canvas(chartEl, { 
+          backgroundColor: '#0f172a', 
+          scale: 2, // Tăng độ nét gấp đôi
+          useCORS: true, // Cho phép tải ảnh ngoại lai nếu có
+          logging: false
         });
+        
+        const link = document.createElement('a');
+        link.download = `BieuDoThongKe_${new Date().toLocaleDateString('vi-VN').replace(/\//g, '-')}.png`;
+        link.href = canvas.toDataURL('image/png');
+        
+        // BẮT BUỘC: Phải gắn link vào body thì một số trình duyệt mới cho phép tải file
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link); // Tải xong thì dọn dẹp
+      } catch (error) {
+        console.error("Lỗi khi xuất ảnh biểu đồ:", error);
       }
     };
-    document.body.appendChild(script);
+
+    // Kiểm tra xem thư viện html2canvas đã được tải vào web chưa
+    if (typeof (w as any).html2canvas !== 'undefined') {
+      processExport();
+    } else {
+      // Nếu chưa có, tiến hành nhúng script thư viện vào trang
+      const script = document.createElement('script');
+      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+      script.onload = () => processExport();
+      script.onerror = () => alert("Lỗi mạng: Không thể tải công cụ xuất ảnh.");
+      document.head.appendChild(script);
+    }
   };
 
   // --- FORM VALIDATION ---
@@ -960,10 +984,10 @@ const App = () => {
                           </div>
                         </div>
 
-                        <div className="h-80 flex relative pl-8 pb-10 pt-6">
+                        <div className="h-80 flex relative pl-8 pb-10 pt-10">
                           <div className="absolute top-0 left-0 text-cyan-500/80 font-bold text-xs uppercase tracking-wider">Số lượng</div>
                           
-                          <div className="absolute top-6 bottom-10 left-0 right-4 flex flex-col justify-between pointer-events-none">
+                          <div className="absolute top-10 bottom-10 left-0 right-4 flex flex-col justify-between pointer-events-none">
                             {[maxChartValue, Math.ceil(maxChartValue * 0.75), Math.ceil(maxChartValue * 0.5), Math.ceil(maxChartValue * 0.25), 0].map((val, idx) => (
                               <div key={idx} className="w-full flex items-center relative">
                                 <span className="absolute -left-8 text-[10px] text-slate-400 w-6 text-right">{val}</span>
@@ -973,7 +997,7 @@ const App = () => {
                           </div>
 
                           <div className="absolute bottom-10 left-8 right-4 border-b-2 border-slate-600 shadow-[0_0_10px_rgba(71,85,105,0.5)]"></div>
-                          <div className="absolute top-6 bottom-10 left-8 border-l-2 border-slate-600 shadow-[0_0_10px_rgba(71,85,105,0.5)]"></div>
+                          <div className="absolute top-10 bottom-10 left-8 border-l-2 border-slate-600 shadow-[0_0_10px_rgba(71,85,105,0.5)]"></div>
 
                           <div className="flex-1 flex items-end justify-around relative z-10 w-full h-full">
                             {chartData.map((d: any) => (
