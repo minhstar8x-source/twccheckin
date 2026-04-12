@@ -37,7 +37,6 @@ const MY_FIREBASE_CONFIG = {
 // ===========================================
 
 // --- KHỞI TẠO FIREBASE ONLINE & XỬ LÝ TYPESCRIPT ---
-// Ép kiểu window thành any để bypass lỗi TypeScript khi gọi biến hệ thống
 const w = window as any; 
 const isCanvasEnv = typeof w.__firebase_config !== 'undefined';
 const firebaseConfig = isCanvasEnv ? JSON.parse(w.__firebase_config) : MY_FIREBASE_CONFIG;
@@ -47,30 +46,94 @@ const db = getFirestore(app);
 const appId = typeof w.__app_id !== 'undefined' ? w.__app_id : 'default-app-id';
 
 const App = () => {
-  const [activeTab, setActiveTab] = useState('checkin');
+  // Sử dụng LocalStorage để giữ đúng tab Admin sau khi tải lại trang do Redirect
+  const [activeTab, setActiveTab] = useState(() => {
+    return localStorage.getItem('twc_activeTab') || 'checkin';
+  });
+
+  useEffect(() => {
+    localStorage.setItem('twc_activeTab', activeTab);
+  }, [activeTab]);
+
   const [checkIns, setCheckIns] = useState<any[]>([]); 
   const [showSuccess, setShowSuccess] = useState(false);
   const [user, setUser] = useState<any>(null);
 
+  // --- ADMIN STATE ---
+  const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
+  const [adminEmail, setAdminEmail] = useState('');
+  const [adminError, setAdminError] = useState('');
+  
+  // Lưu danh sách quyền Admin vào LocalStorage để không mất khi tải lại trang
+  const [adminList, setAdminList] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('twc_adminList');
+      return saved ? JSON.parse(saved) : [ROOT_ADMIN_EMAIL];
+    } catch {
+      return [ROOT_ADMIN_EMAIL];
+    }
+  });
+
+  useEffect(() => {
+    localStorage.setItem('twc_adminList', JSON.stringify(adminList));
+  }, [adminList]);
+
+  const [newAdminEmail, setNewAdminEmail] = useState('');
+  const [adminSubTab, setAdminSubTab] = useState('list'); 
+  const [chartView, setChartView] = useState('day'); 
+  const [filterDate, setFilterDate] = useState(''); 
+  const [filterType, setFilterType] = useState('all'); 
+
   // --- FIREBASE KẾT NỐI & TẢI DỮ LIỆU ---
   useEffect(() => {
     const initAuth = async () => {
+      if (!firebaseConfig.apiKey) return;
       try {
-        const initToken = w.__initial_auth_token;
-        if (typeof initToken !== 'undefined' && initToken) {
-          await signInWithCustomToken(auth, initToken);
-        } else {
-          await signInAnonymously(auth);
+        // Đón kết quả nếu đang từ trang đăng nhập Google (Redirect) trở về
+        await getRedirectResult(auth); 
+        
+        // Nếu sau khi đón mà vẫn chưa đăng nhập, cấp tài khoản ẩn danh
+        if (!auth.currentUser) {
+          const initToken = w.__initial_auth_token;
+          if (typeof initToken !== 'undefined' && initToken) {
+            await signInWithCustomToken(auth, initToken);
+          } else {
+            await signInAnonymously(auth);
+          }
         }
       } catch (error) {
-        console.error("Auth error:", error);
+        console.error("Auth init error:", error);
       }
     };
-    if (firebaseConfig.apiKey) initAuth();
     
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+    initAuth();
+    
+    // Theo dõi liên tục trạng thái người dùng (Cả ẩn danh lẫn có Email)
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
+      
+      // Nếu có email (tức là đã đăng nhập bằng Google thành công)
+      if (currentUser && currentUser.email) {
+        const savedList = localStorage.getItem('twc_adminList');
+        const currentAdmins = savedList ? JSON.parse(savedList) : [ROOT_ADMIN_EMAIL];
+        
+        if (currentAdmins.includes(currentUser.email)) {
+          setIsAdminLoggedIn(true);
+          setAdminEmail(currentUser.email);
+        } else {
+          // Có email nhưng không nằm trong danh sách cấp quyền -> Đá ra
+          setAdminError(`Tài khoản ${currentUser.email} không có quyền truy cập.`);
+          setIsAdminLoggedIn(false);
+          setAdminEmail('');
+          await signOut(auth);
+          await signInAnonymously(auth); // Cho lại ẩn danh để có thể điền form Checkin
+        }
+      } else {
+        setIsAdminLoggedIn(false);
+        setAdminEmail('');
+      }
     });
+    
     return () => unsubscribe();
   }, []);
 
@@ -106,19 +169,6 @@ const App = () => {
     customerAge: ''
   };
   const [formData, setFormData] = useState(initialFormState);
-
-  // --- ADMIN STATE ---
-  const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
-  const [adminEmail, setAdminEmail] = useState('');
-  const [adminError, setAdminError] = useState('');
-  
-  const [adminList, setAdminList] = useState<string[]>([ROOT_ADMIN_EMAIL]);
-  const [newAdminEmail, setNewAdminEmail] = useState('');
-
-  const [adminSubTab, setAdminSubTab] = useState('list'); 
-  const [chartView, setChartView] = useState('day'); 
-  const [filterDate, setFilterDate] = useState(''); 
-  const [filterType, setFilterType] = useState('all'); 
 
   // --- HANDLERS ---
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
@@ -182,22 +232,24 @@ const App = () => {
       return;
     }
 
+    const provider = new GoogleAuthProvider();
     try {
-      const provider = new GoogleAuthProvider();
-      const result = await signInWithPopup(auth, provider);
-      const userEmail = result.user.email || '';
-
-      if (adminList.includes(userEmail)) {
-        setIsAdminLoggedIn(true);
-        setAdminEmail(userEmail);
-      } else {
-        setAdminError(`Tài khoản ${userEmail} không có quyền truy cập.`);
-        await signOut(auth);
-        await signInAnonymously(auth);
-      }
-    } catch (error) {
+      // 1. Thử mở cửa sổ Popup trước cho nhanh
+      await signInWithPopup(auth, provider);
+      // Kết quả thành công sẽ được tự động đón ở onAuthStateChanged phía trên
+    } catch (error: any) {
       console.error("Lỗi đăng nhập:", error);
-      setAdminError("Đăng nhập thất bại. Vui lòng kiểm tra lại popup có bị chặn không.");
+      // 2. Bắt lỗi nếu cửa sổ bị Zalo/Messenger/Safari chặn (auth/popup-blocked)
+      if (error.code === 'auth/popup-blocked' || error.code === 'auth/cancelled-popup-request' || error.code === 'auth/popup-closed-by-user') {
+         try {
+           // Ép dùng chế độ Chuyển Trang (Redirect) để vượt rào chắn
+           await signInWithRedirect(auth, provider);
+         } catch(e: any) {
+           setAdminError("Lỗi hệ thống khi chuyển trang: " + e.message);
+         }
+      } else {
+        setAdminError("Đăng nhập thất bại: " + error.message);
+      }
     }
   };
 
@@ -395,7 +447,7 @@ const App = () => {
                 <CheckCircle2 size={24} className="text-white" />
                 <div>
                   <h3 className="font-bold text-lg">Đăng ký thành công!</h3>
-                  <p className="text-emerald-50 text-sm">Thông tin tham quan đã được gửi tới hệ thống.</p>
+                  <p className="text-emerald-50 text-sm">Thông বার্ত tin tham quan đã được gửi tới hệ thống.</p>
                 </div>
               </div>
             )}
@@ -655,7 +707,7 @@ const App = () => {
                     </svg>
                     <span>Đăng nhập bằng Google</span>
                   </button>
-                  {adminError && <p className="text-red-500 text-sm mt-2">{adminError}</p>}
+                  {adminError && <p className="text-red-500 text-sm mt-2 font-medium">{adminError}</p>}
                 </div>
               </div>
             ) : (
