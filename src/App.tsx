@@ -446,8 +446,8 @@ const App = () => {
               <div className="mb-6 p-4 bg-emerald-500/90 backdrop-blur-sm text-white shadow-lg rounded-xl flex items-center space-x-3 animate-in fade-in slide-in-from-top-4 duration-300">
                 <CheckCircle2 size={24} className="text-white" />
                 <div>
-                  <h3 className="font-bold text-lg">Đăng ký thành công!</h3>
-                  <p className="text-emerald-50 text-sm">Thông বার্ত tin tham quan đã được gửi tới hệ thống.</p>
+                  <h3 className="font-bold text-lg">Check in thành công.</h3>
+                  <p className="text-emerald-50 text-sm">Welcome to The Win City Gallery!!!</p>
                 </div>
               </div>
             )}
