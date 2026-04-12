@@ -36,20 +36,6 @@ const MY_FIREBASE_CONFIG = {
 };
 // ===========================================
 
-// === CẤU HÌNH CƠ BẢN (THAY ĐỔI TẠI ĐÂY) ===
-const ROOT_ADMIN_EMAIL = 'admin@thewincity.vn'; 
-const BANNER_IMAGE_URL = 'https://i.postimg.cc/7hQSRb42/660431692-122180502596789445-5003665343564458581-n.jpg';
-
-const MY_FIREBASE_CONFIG = {
-  apiKey: "",
-  authDomain: "",
-  projectId: "",
-  storageBucket: "",
-  messagingSenderId: "",
-  appId: ""
-};
-// ===========================================
-
 // --- KHỞI TẠO FIREBASE ONLINE & XỬ LÝ TYPESCRIPT ---
 const w = window as any; 
 const isCanvasEnv = typeof w.__firebase_config !== 'undefined';
@@ -307,43 +293,81 @@ const App = () => {
 
   const chartData = useMemo(() => {
     const dataMap: any = {};
-    const today = new Date();
-    today.setHours(0,0,0,0);
+    const now = new Date();
+    now.setHours(0,0,0,0);
 
-    // Tự động tạo sẵn các mốc thời gian để luôn hiển thị cột 0 nếu không có dữ liệu
     if (chartView === 'week') {
-      for (let i = 3; i >= 0; i--) {
-        const key = `week-${i}`;
-        dataMap[key] = { key, label: i === 0 ? 'Tuần này' : `Cách ${i} tuần`, customers: 0, staff: 0, sortIndex: -i };
+      // Tuần hiện tại: Lấy 7 ngày từ Thứ 2 đến Chủ nhật
+      const dayOfWeek = now.getDay();
+      const diffToMonday = now.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
+      const monday = new Date(now.getFullYear(), now.getMonth(), diffToMonday);
+
+      const dayNames = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
+
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(monday);
+        d.setDate(monday.getDate() + i);
+        const dateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        
+        dataMap[dateStr] = { 
+          key: dateStr, 
+          label: `${dayNames[d.getDay()]} (${d.getDate()}/${d.getMonth()+1})`, 
+          customers: 0, 
+          staff: 0, 
+          sortIndex: i 
+        };
       }
     } else if (chartView === 'month') {
-      for (let i = 5; i >= 0; i--) {
-        const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
-        const key = `${d.getFullYear()}-${d.getMonth()}`;
-        dataMap[key] = { key, label: `T${d.getMonth() + 1}`, customers: 0, staff: 0, sortIndex: -i };
+      // Tháng hiện tại: Gom thành các nhóm Tuần (Thứ 2 -> Chủ nhật)
+      const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      const lastDayOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+      
+      let day = firstDayOfMonth.getDay();
+      let diff = firstDayOfMonth.getDate() - day + (day === 0 ? -6 : 1);
+      let currentMonday = new Date(firstDayOfMonth.getFullYear(), firstDayOfMonth.getMonth(), diff);
+
+      let weekIndex = 0;
+      while (currentMonday <= lastDayOfMonth) {
+        const start = new Date(currentMonday);
+        const end = new Date(currentMonday);
+        end.setDate(end.getDate() + 6); // Cộng thêm 6 ngày để ra Chủ nhật
+
+        const key = `week-${weekIndex}`;
+        
+        dataMap[key] = {
+          key,
+          label: `Từ ${start.getDate()}/${start.getMonth()+1}\nđến ${end.getDate()}/${end.getMonth()+1}`,
+          customers: 0,
+          staff: 0,
+          sortIndex: weekIndex,
+          startDate: start,
+          endDate: end
+        };
+
+        // Tiến tới tuần tiếp theo
+        currentMonday.setDate(currentMonday.getDate() + 7);
+        weekIndex++;
       }
     }
 
     checkIns.forEach((item: any) => {
       const itemDate = new Date(item.date);
-      let key = '';
-
+      itemDate.setHours(0,0,0,0);
+      
       if (chartView === 'week') {
-        const diffDays = Math.floor((today.getTime() - itemDate.getTime()) / (1000 * 60 * 60 * 24));
-        if (diffDays >= 0 && diffDays <= 27) {
-          const weekNum = Math.floor(diffDays / 7);
-          key = `week-${weekNum}`;
+        const dateStr = item.date;
+        if (dataMap[dateStr]) {
+          dataMap[dateStr].customers += item.customerCount;
+          dataMap[dateStr].staff += item.staffCount;
         }
       } else if (chartView === 'month') {
-        const diffMonths = (today.getFullYear() - itemDate.getFullYear()) * 12 + (today.getMonth() - itemDate.getMonth());
-        if (diffMonths >= 0 && diffMonths <= 5) {
-          key = `${itemDate.getFullYear()}-${itemDate.getMonth()}`;
-        }
-      }
-
-      if (key && dataMap[key]) {
-        dataMap[key].customers += item.customerCount;
-        dataMap[key].staff += item.staffCount;
+        // Kiểm tra xem Data thuộc tuần nào trong tháng
+        Object.values(dataMap).forEach((weekBucket: any) => {
+          if (itemDate >= weekBucket.startDate && itemDate <= weekBucket.endDate) {
+            weekBucket.customers += item.customerCount;
+            weekBucket.staff += item.staffCount;
+          }
+        });
       }
     });
 
@@ -411,8 +435,16 @@ const App = () => {
   }, [formData, hasCustomer]);
 
   return (
-    <div className="min-h-screen bg-slate-100 font-sans pb-12">
+    <div className="min-h-screen bg-slate-100 pb-12" style={{ fontFamily: "'Be Vietnam Pro', sans-serif" }}>
       
+      {/* KHIẾN TOÀN BỘ FONT TRONG APP ĐỔI THÀNH BE VIETNAM PRO */}
+      <style dangerouslySetInnerHTML={{__html: `
+        @import url('https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,300;1,400;1,500;1,600;1,700;1,800;1,900&display=swap');
+        body, input, button, select, textarea {
+          font-family: 'Be Vietnam Pro', sans-serif !important;
+        }
+      `}} />
+
       {/* THÔNG BÁO POP-UP THÀNH CÔNG */}
       {showSuccess && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-300">
@@ -918,10 +950,10 @@ const App = () => {
                           </div>
                         </div>
 
-                        <div className="h-80 flex relative pl-8 pb-8 pt-6">
+                        <div className="h-80 flex relative pl-8 pb-10 pt-6">
                           <div className="absolute top-0 left-0 text-cyan-500/80 font-bold text-xs uppercase tracking-wider">Số lượng</div>
                           
-                          <div className="absolute top-6 bottom-8 left-0 right-4 flex flex-col justify-between pointer-events-none">
+                          <div className="absolute top-6 bottom-10 left-0 right-4 flex flex-col justify-between pointer-events-none">
                             {[maxChartValue, Math.ceil(maxChartValue * 0.75), Math.ceil(maxChartValue * 0.5), Math.ceil(maxChartValue * 0.25), 0].map((val, idx) => (
                               <div key={idx} className="w-full flex items-center relative">
                                 <span className="absolute -left-8 text-[10px] text-slate-400 w-6 text-right">{val}</span>
@@ -930,8 +962,8 @@ const App = () => {
                             ))}
                           </div>
 
-                          <div className="absolute bottom-8 left-8 right-4 border-b-2 border-slate-600 shadow-[0_0_10px_rgba(71,85,105,0.5)]"></div>
-                          <div className="absolute top-6 bottom-8 left-8 border-l-2 border-slate-600 shadow-[0_0_10px_rgba(71,85,105,0.5)]"></div>
+                          <div className="absolute bottom-10 left-8 right-4 border-b-2 border-slate-600 shadow-[0_0_10px_rgba(71,85,105,0.5)]"></div>
+                          <div className="absolute top-6 bottom-10 left-8 border-l-2 border-slate-600 shadow-[0_0_10px_rgba(71,85,105,0.5)]"></div>
 
                           <div className="flex-1 flex items-end justify-around relative z-10 w-full h-full">
                             {chartData.map((d: any) => (
@@ -950,7 +982,7 @@ const App = () => {
                                     <span className="absolute -top-6 left-1/2 transform -translate-x-1/2 text-[11px] sm:text-xs font-bold text-cyan-400 drop-shadow-md">{d.staff}</span>
                                   </div>
                                 </div>
-                                <span className="absolute -bottom-7 text-[10px] sm:text-xs font-medium text-slate-400 whitespace-nowrap">{d.label}</span>
+                                <span className="absolute -bottom-10 text-[9px] sm:text-[11px] font-medium text-slate-400 text-center w-full min-w-[50px] leading-tight px-1 whitespace-pre-wrap">{d.label}</span>
                               </div>
                             ))}
                           </div>
