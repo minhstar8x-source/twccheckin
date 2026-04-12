@@ -36,6 +36,20 @@ const MY_FIREBASE_CONFIG = {
 };
 // ===========================================
 
+// === CẤU HÌNH CƠ BẢN (THAY ĐỔI TẠI ĐÂY) ===
+const ROOT_ADMIN_EMAIL = 'admin@thewincity.vn'; 
+const BANNER_IMAGE_URL = 'https://i.postimg.cc/7hQSRb42/660431692-122180502596789445-5003665343564458581-n.jpg';
+
+const MY_FIREBASE_CONFIG = {
+  apiKey: "",
+  authDomain: "",
+  projectId: "",
+  storageBucket: "",
+  messagingSenderId: "",
+  appId: ""
+};
+// ===========================================
+
 // --- KHỞI TẠO FIREBASE ONLINE & XỬ LÝ TYPESCRIPT ---
 const w = window as any; 
 const isCanvasEnv = typeof w.__firebase_config !== 'undefined';
@@ -80,7 +94,7 @@ const App = () => {
 
   const [newAdminEmail, setNewAdminEmail] = useState('');
   const [adminSubTab, setAdminSubTab] = useState('list'); 
-  const [chartView, setChartView] = useState('day'); 
+  const [chartView, setChartView] = useState('week'); 
   const [filterDate, setFilterDate] = useState(''); 
   const [filterType, setFilterType] = useState('all'); 
 
@@ -296,45 +310,47 @@ const App = () => {
     const today = new Date();
     today.setHours(0,0,0,0);
 
+    // Tự động tạo sẵn các mốc thời gian để luôn hiển thị cột 0 nếu không có dữ liệu
+    if (chartView === 'week') {
+      for (let i = 3; i >= 0; i--) {
+        const key = `week-${i}`;
+        dataMap[key] = { key, label: i === 0 ? 'Tuần này' : `Cách ${i} tuần`, customers: 0, staff: 0, sortIndex: -i };
+      }
+    } else if (chartView === 'month') {
+      for (let i = 5; i >= 0; i--) {
+        const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
+        const key = `${d.getFullYear()}-${d.getMonth()}`;
+        dataMap[key] = { key, label: `T${d.getMonth() + 1}`, customers: 0, staff: 0, sortIndex: -i };
+      }
+    }
+
     checkIns.forEach((item: any) => {
       const itemDate = new Date(item.date);
       let key = '';
-      let label = '';
 
-      if (chartView === 'day') {
+      if (chartView === 'week') {
         const diffDays = Math.floor((today.getTime() - itemDate.getTime()) / (1000 * 60 * 60 * 24));
-        if (diffDays <= 6 && diffDays >= 0) {
-          key = item.date;
-          label = `${itemDate.getDate()}/${itemDate.getMonth() + 1}`;
-        }
-      } else if (chartView === 'week') {
-        const diffDays = Math.floor((today.getTime() - itemDate.getTime()) / (1000 * 60 * 60 * 24));
-        if (diffDays <= 27 && diffDays >= 0) {
+        if (diffDays >= 0 && diffDays <= 27) {
           const weekNum = Math.floor(diffDays / 7);
           key = `week-${weekNum}`;
-          label = weekNum === 0 ? 'Tuần này' : `Cách ${weekNum} tuần`;
         }
       } else if (chartView === 'month') {
         const diffMonths = (today.getFullYear() - itemDate.getFullYear()) * 12 + (today.getMonth() - itemDate.getMonth());
-        if (diffMonths <= 5 && diffMonths >= 0) {
+        if (diffMonths >= 0 && diffMonths <= 5) {
           key = `${itemDate.getFullYear()}-${itemDate.getMonth()}`;
-          label = `T${itemDate.getMonth() + 1}`;
         }
       }
 
-      if (key) {
-        if (!dataMap[key]) {
-          dataMap[key] = { key, label, customers: 0, staff: 0, rawDate: itemDate };
-        }
+      if (key && dataMap[key]) {
         dataMap[key].customers += item.customerCount;
         dataMap[key].staff += item.staffCount;
       }
     });
 
-    return Object.values(dataMap).sort((a: any, b: any) => a.rawDate.getTime() - b.rawDate.getTime());
+    return Object.values(dataMap).sort((a: any, b: any) => a.sortIndex - b.sortIndex);
   }, [checkIns, chartView]);
 
-  const maxChartValue = Math.max(1, ...chartData.map((d: any) => Math.max(d.customers, d.staff)));
+  const maxChartValue = Math.max(5, ...chartData.map((d: any) => Math.max(d.customers, d.staff)));
 
   // --- TÍNH NĂNG EXPORT ---
   const exportToExcel = () => {
@@ -397,6 +413,19 @@ const App = () => {
   return (
     <div className="min-h-screen bg-slate-100 font-sans pb-12">
       
+      {/* THÔNG BÁO POP-UP THÀNH CÔNG */}
+      {showSuccess && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-300">
+          <div className="bg-white p-8 rounded-3xl shadow-2xl flex flex-col items-center max-w-sm mx-4 animate-in zoom-in-95 duration-300">
+            <div className="w-20 h-20 bg-emerald-100 rounded-full flex items-center justify-center mb-6 shadow-inner">
+              <CheckCircle2 size={48} className="text-emerald-500" />
+            </div>
+            <h3 className="font-bold text-2xl text-slate-800 text-center mb-2">Check in thành công.</h3>
+            <p className="text-slate-500 text-center font-medium text-lg">Welcome to The Win City Gallery!!!</p>
+          </div>
+        </div>
+      )}
+
       {/* HEADER MỚI (Màu trắng, Nút cam) */}
       <header className="bg-white shadow-sm sticky top-0 z-20">
         <div className="max-w-5xl mx-auto px-4 h-[72px] flex items-center justify-between">
@@ -442,15 +471,6 @@ const App = () => {
         {/* TAB 1: CHECK-IN FORM */}
         {activeTab === 'checkin' && (
           <div className="max-w-4xl mx-auto">
-            {showSuccess && (
-              <div className="mb-6 p-4 bg-emerald-500/90 backdrop-blur-sm text-white shadow-lg rounded-xl flex items-center space-x-3 animate-in fade-in slide-in-from-top-4 duration-300">
-                <CheckCircle2 size={24} className="text-white" />
-                <div>
-                  <h3 className="font-bold text-lg">Check in thành công.</h3>
-                  <p className="text-emerald-50 text-sm">Welcome to The Win City Gallery!!!</p>
-                </div>
-              </div>
-            )}
 
             <div className="bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-100">
               
@@ -870,7 +890,7 @@ const App = () => {
                         </div>
                         
                         <div className="flex bg-slate-100 p-1 rounded-lg">
-                          {['day', 'week', 'month'].map(view => (
+                          {['week', 'month'].map(view => (
                             <button
                               key={view}
                               onClick={() => setChartView(view)}
@@ -880,7 +900,7 @@ const App = () => {
                                   : 'text-slate-500 hover:text-slate-800'
                               }`}
                             >
-                              {view === 'day' ? 'Ngày' : view === 'week' ? 'Tuần' : 'Tháng'}
+                              {view === 'week' ? 'Tuần' : 'Tháng'}
                             </button>
                           ))}
                         </div>
@@ -898,49 +918,43 @@ const App = () => {
                           </div>
                         </div>
 
-                        {chartData.length === 0 ? (
-                          <div className="h-72 w-full flex items-center justify-center text-slate-500">
-                            Không đủ dữ liệu hiển thị biểu đồ
+                        <div className="h-80 flex relative pl-8 pb-8 pt-6">
+                          <div className="absolute top-0 left-0 text-cyan-500/80 font-bold text-xs uppercase tracking-wider">Số lượng</div>
+                          
+                          <div className="absolute top-6 bottom-8 left-0 right-4 flex flex-col justify-between pointer-events-none">
+                            {[maxChartValue, Math.ceil(maxChartValue * 0.75), Math.ceil(maxChartValue * 0.5), Math.ceil(maxChartValue * 0.25), 0].map((val, idx) => (
+                              <div key={idx} className="w-full flex items-center relative">
+                                <span className="absolute -left-8 text-[10px] text-slate-400 w-6 text-right">{val}</span>
+                                <div className="w-full border-t border-slate-700/50 border-dashed"></div>
+                              </div>
+                            ))}
                           </div>
-                        ) : (
-                          <div className="h-80 flex relative pl-8 pb-8 pt-6">
-                            <div className="absolute top-0 left-0 text-cyan-500/80 font-bold text-xs uppercase tracking-wider">Số lượng</div>
-                            
-                            <div className="absolute top-6 bottom-8 left-0 right-4 flex flex-col justify-between pointer-events-none">
-                              {[maxChartValue, Math.ceil(maxChartValue * 0.75), Math.ceil(maxChartValue * 0.5), Math.ceil(maxChartValue * 0.25), 0].map((val, idx) => (
-                                <div key={idx} className="w-full flex items-center relative">
-                                  <span className="absolute -left-8 text-[10px] text-slate-400 w-6 text-right">{val}</span>
-                                  <div className="w-full border-t border-slate-700/50 border-dashed"></div>
-                                </div>
-                              ))}
-                            </div>
 
-                            <div className="absolute bottom-8 left-8 right-4 border-b-2 border-slate-600 shadow-[0_0_10px_rgba(71,85,105,0.5)]"></div>
-                            <div className="absolute top-6 bottom-8 left-8 border-l-2 border-slate-600 shadow-[0_0_10px_rgba(71,85,105,0.5)]"></div>
+                          <div className="absolute bottom-8 left-8 right-4 border-b-2 border-slate-600 shadow-[0_0_10px_rgba(71,85,105,0.5)]"></div>
+                          <div className="absolute top-6 bottom-8 left-8 border-l-2 border-slate-600 shadow-[0_0_10px_rgba(71,85,105,0.5)]"></div>
 
-                            <div className="flex-1 flex items-end justify-around relative z-10 w-full h-full">
-                              {chartData.map((d: any) => (
-                                <div key={d.key} className="flex flex-col items-center flex-1 h-full relative group">
-                                  <div className="flex items-end justify-center space-x-1 sm:space-x-2 w-full h-full">
-                                    <div 
-                                      style={{ height: `${Math.max((d.customers / maxChartValue) * 100, 2)}%` }} 
-                                      className="w-full max-w-[16px] sm:max-w-[32px] rounded-t-md relative bg-gradient-to-t from-orange-600 to-orange-400 shadow-[0_0_12px_rgba(234,88,12,0.6)] group-hover:brightness-125 transition-all"
-                                    >
-                                      <span className="absolute -top-6 left-1/2 transform -translate-x-1/2 text-[11px] sm:text-xs font-bold text-orange-400 drop-shadow-md">{d.customers}</span>
-                                    </div>
-                                    <div 
-                                      style={{ height: `${Math.max((d.staff / maxChartValue) * 100, 2)}%` }} 
-                                      className="w-full max-w-[16px] sm:max-w-[32px] rounded-t-md relative bg-gradient-to-t from-cyan-600 to-cyan-400 shadow-[0_0_12px_rgba(6,182,212,0.6)] group-hover:brightness-125 transition-all"
-                                    >
-                                      <span className="absolute -top-6 left-1/2 transform -translate-x-1/2 text-[11px] sm:text-xs font-bold text-cyan-400 drop-shadow-md">{d.staff}</span>
-                                    </div>
+                          <div className="flex-1 flex items-end justify-around relative z-10 w-full h-full">
+                            {chartData.map((d: any) => (
+                              <div key={d.key} className="flex flex-col items-center flex-1 h-full relative group">
+                                <div className="flex items-end justify-center space-x-1 sm:space-x-2 w-full h-full">
+                                  <div 
+                                    style={{ height: `${d.customers === 0 ? 0 : Math.max((d.customers / maxChartValue) * 100, 2)}%` }} 
+                                    className="w-full max-w-[16px] sm:max-w-[32px] rounded-t-md relative bg-gradient-to-t from-orange-600 to-orange-400 shadow-[0_0_12px_rgba(234,88,12,0.6)] group-hover:brightness-125 transition-all"
+                                  >
+                                    <span className="absolute -top-6 left-1/2 transform -translate-x-1/2 text-[11px] sm:text-xs font-bold text-orange-400 drop-shadow-md">{d.customers}</span>
                                   </div>
-                                  <span className="absolute -bottom-7 text-[10px] sm:text-xs font-medium text-slate-400 whitespace-nowrap">{d.label}</span>
+                                  <div 
+                                    style={{ height: `${d.staff === 0 ? 0 : Math.max((d.staff / maxChartValue) * 100, 2)}%` }} 
+                                    className="w-full max-w-[16px] sm:max-w-[32px] rounded-t-md relative bg-gradient-to-t from-cyan-600 to-cyan-400 shadow-[0_0_12px_rgba(6,182,212,0.6)] group-hover:brightness-125 transition-all"
+                                  >
+                                    <span className="absolute -top-6 left-1/2 transform -translate-x-1/2 text-[11px] sm:text-xs font-bold text-cyan-400 drop-shadow-md">{d.staff}</span>
+                                  </div>
                                 </div>
-                              ))}
-                            </div>
+                                <span className="absolute -bottom-7 text-[10px] sm:text-xs font-medium text-slate-400 whitespace-nowrap">{d.label}</span>
+                              </div>
+                            ))}
                           </div>
-                        )}
+                        </div>
                       </div>
                     </div>
                   )}
