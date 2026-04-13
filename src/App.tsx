@@ -2,12 +2,8 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Building2, 
   User, 
-  Phone, 
   Users, 
-  CalendarClock, 
   CheckCircle2, 
-  ListOrdered, 
-  ChevronRight, 
   ShieldCheck, 
   Lock, 
   BarChart3, 
@@ -80,7 +76,7 @@ const App = () => {
   const [adminSubTab, setAdminSubTab] = useState('list'); 
   const [chartView, setChartView] = useState<'day' | 'week' | 'month'>('week'); 
   const [filterDate, setFilterDate] = useState(''); 
-  const [filterType, setFilterType] = useState('all'); 
+  const filterType = 'all'; // Chuyển thành hằng số để tránh lỗi unused 'setFilterType'
   
   const [adminList, setAdminList] = useState<string[]>(() => {
     try {
@@ -288,7 +284,7 @@ const App = () => {
       if (filterType === 'staff_only') matchType = !item.hasCustomer;
       return matchDate && matchType;
     });
-  }, [checkIns, filterDate, filterType]);
+  }, [checkIns, filterDate]);
 
   const chartData = useMemo(() => {
     const dataMap: any = {};
