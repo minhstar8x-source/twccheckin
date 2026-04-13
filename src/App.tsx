@@ -387,20 +387,18 @@ const App = () => {
           allowTaint: false
         });
         
-        canvas.toBlob((blob: Blob | null) => {
-          if (!blob) throw new Error("Canvas Error");
-          const url = URL.createObjectURL(blob);
-          const link = document.createElement('a');
-          link.download = `Gallery_Chart_${new Date().getTime()}.png`;
-          link.href = url;
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-          URL.revokeObjectURL(url);
-          setIsExporting(false);
-        }, 'image/png');
+        // Chuyển sang DataURL để tương thích cao hơn trên di động thay vì toBlob
+        const dataUrl = canvas.toDataURL('image/png');
+        const link = document.createElement('a');
+        link.download = `Gallery_Chart_${new Date().getTime()}.png`;
+        link.href = dataUrl;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        setIsExporting(false);
       } catch (e) {
-        alert("Lỗi: Không thể lưu ảnh. Vui lòng thử lại.");
+        console.error("Lỗi xuất ảnh:", e);
+        alert("Lỗi: Trình duyệt không hỗ trợ chụp ảnh vùng này hoặc bị chặn bởi quyền riêng tư.");
         setIsExporting(false);
       }
     };
@@ -474,9 +472,14 @@ const App = () => {
             <div className="bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-100">
               <div className="w-full h-48 sm:h-72 bg-cover bg-center relative flex items-center justify-center px-4" style={{ backgroundImage: `url('${BANNER_IMAGE_URL}')` }}>
                 <div className="absolute inset-0 bg-black/55"></div>
-                <div className="relative z-10 text-center text-white">
-                  <h2 className="text-2xl sm:text-4xl font-extrabold uppercase drop-shadow-lg">CHECK IN GALLERY</h2>
-                  <p className="text-sm sm:text-lg font-medium opacity-90">Vui lòng điền thông tin để được hỗ trợ tốt nhất</p>
+                <div className="relative z-10 text-center">
+                  <h2 
+                    className="text-2xl sm:text-4xl font-extrabold uppercase drop-shadow-lg text-white" 
+                    style={{ color: '#ffffff' }}
+                  >
+                    CHECK IN THE WIN CITY GALLERY
+                  </h2>
+                  <p className="text-sm sm:text-lg font-medium opacity-90 text-white">Vui lòng điền thông tin để được hỗ trợ tốt nhất</p>
                 </div>
               </div>
               
@@ -580,7 +583,6 @@ const App = () => {
                         <div className="flex flex-wrap items-center gap-3">
                           <button onClick={exportToExcel} className="px-4 py-2 bg-emerald-600 text-white text-xs rounded-md flex items-center font-bold hover:bg-emerald-700 shadow-sm"><Download size={14} className="mr-1"/> Excel</button>
                           
-                          {/* Khôi phục Bộ lọc để setFilterType được sử dụng */}
                           <select 
                             value={filterType} 
                             onChange={(e) => setFilterType(e.target.value)}
