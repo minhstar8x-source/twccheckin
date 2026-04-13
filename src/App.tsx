@@ -76,7 +76,7 @@ const App = () => {
   const [adminSubTab, setAdminSubTab] = useState('list'); 
   const [chartView, setChartView] = useState<'day' | 'week' | 'month'>('week'); 
   const [filterDate, setFilterDate] = useState(''); 
-  const filterType = 'all'; // Chuyển thành hằng số để tránh lỗi unused 'setFilterType'
+  const [filterType, setFilterType] = useState('all'); 
   
   const [adminList, setAdminList] = useState<string[]>(() => {
     try {
@@ -284,7 +284,7 @@ const App = () => {
       if (filterType === 'staff_only') matchType = !item.hasCustomer;
       return matchDate && matchType;
     });
-  }, [checkIns, filterDate]);
+  }, [checkIns, filterDate, filterType]);
 
   const chartData = useMemo(() => {
     const dataMap: any = {};
@@ -387,7 +387,7 @@ const App = () => {
           allowTaint: false
         });
         
-        canvas.toBlob((blob: Blob) => {
+        canvas.toBlob((blob: Blob | null) => {
           if (!blob) throw new Error("Canvas Error");
           const url = URL.createObjectURL(blob);
           const link = document.createElement('a');
@@ -575,10 +575,22 @@ const App = () => {
                   {/* DANH SÁCH */}
                   {adminSubTab === 'list' && (
                     <div className="bg-white rounded-xl shadow-sm border overflow-hidden animate-in fade-in">
-                      <div className="flex flex-col sm:flex-row justify-between p-4 border-b bg-slate-50 gap-4">
+                      <div className="flex flex-col lg:flex-row justify-between p-4 border-b bg-slate-50 gap-4">
                         <h3 className="font-bold flex items-center text-slate-800">Lịch sử Đăng ký <span className="ml-2 bg-orange-100 text-orange-800 px-3 py-1 rounded-full text-xs font-bold">{filteredCheckIns.length} lượt</span></h3>
-                        <div className="flex space-x-2">
+                        <div className="flex flex-wrap items-center gap-3">
                           <button onClick={exportToExcel} className="px-4 py-2 bg-emerald-600 text-white text-xs rounded-md flex items-center font-bold hover:bg-emerald-700 shadow-sm"><Download size={14} className="mr-1"/> Excel</button>
+                          
+                          {/* Khôi phục Bộ lọc để setFilterType được sử dụng */}
+                          <select 
+                            value={filterType} 
+                            onChange={(e) => setFilterType(e.target.value)}
+                            className="px-3 py-2 text-xs border rounded-md shadow-sm outline-none focus:ring-1 focus:ring-[#ea580c]"
+                          >
+                            <option value="all">Tất cả</option>
+                            <option value="customer_only">Có khách</option>
+                            <option value="staff_only">Nội bộ</option>
+                          </select>
+
                           <input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)} className="px-3 py-2 text-xs border rounded-md shadow-sm outline-none focus:ring-1 focus:ring-[#ea580c]" />
                         </div>
                       </div>
@@ -614,7 +626,6 @@ const App = () => {
                                   <td className="p-4 text-center font-semibold text-orange-600">{item.customerCount}</td>
                                   <td className="p-4 text-center font-extrabold text-[#ea580c]">{item.staffCount + item.customerCount}</td>
                                   <td className="p-4 text-right">
-                                    {/* Chỉ Admin tổng mới thấy nút xóa bất kỳ */}
                                     {adminEmail === ROOT_ADMIN_EMAIL && (
                                       <button 
                                         onClick={() => handleDeleteEntry(item.firebaseId)} 
@@ -662,8 +673,6 @@ const App = () => {
 
                         <div className="h-80 flex relative pl-20 pb-12 pt-16">
                           <div className="absolute top-4 left-6 text-cyan-500 font-bold text-[10px] uppercase opacity-50">SỐ LƯỢNG</div>
-                          
-                          {/* Trục Y: Sử dụng lề trái tuyệt đối và tăng khoảng cách để số không bị nhảy ra ngoài */}
                           <div className="absolute top-16 bottom-12 left-2 w-16 flex flex-col justify-between pointer-events-none text-right pr-3">
                             {[maxChartValue, Math.ceil(maxChartValue * 0.75), Math.ceil(maxChartValue * 0.5), Math.ceil(maxChartValue * 0.25), 0].map((val, idx) => (
                               <div key={idx} className="h-0 flex items-center justify-end">
@@ -671,8 +680,6 @@ const App = () => {
                               </div>
                             ))}
                           </div>
-
-                          {/* Lưới ngang */}
                           <div className="absolute top-16 bottom-12 left-20 right-4 flex flex-col justify-between pointer-events-none">
                             {[0, 1, 2, 3, 4].map((_, idx) => (
                               <div key={idx} className="w-full border-t border-slate-700/20 border-dashed"></div>
