@@ -65,6 +65,26 @@ const getLocalDateString = (date: Date) => {
   return `${y}-${m}-${d}`;
 };
 
+// Trình phân tích CSV chuẩn xác (không bỏ qua ô trống)
+const parseCSVRow = (str: string) => {
+  const result = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < str.length; i++) {
+    const char = str[i];
+    if (char === '"') {
+      inQuotes = !inQuotes;
+    } else if (char === ',' && !inQuotes) {
+      result.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  result.push(current.trim());
+  return result;
+};
+
 const App = () => {
   const [activeTab, setActiveTab] = useState(() => {
     if (typeof localStorage !== 'undefined') {
@@ -86,7 +106,17 @@ const App = () => {
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
   const [adminEmail, setAdminEmail] = useState('');
   const [adminError, setAdminError] = useState('');
-  const [adminSubTab, setAdminSubTab] = useState('list'); 
+  
+  // Điều chỉnh để các tab cũ tự động chuyển về đúng chỗ nếu còn kẹt trong localStorage
+  const [adminSubTab, setAdminSubTab] = useState(() => {
+    const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('twc_adminSubTab') : 'list';
+    return ['list', 'chart', 'settings'].includes(saved || '') ? saved || 'list' : 'list';
+  }); 
+
+  useEffect(() => {
+    localStorage.setItem('twc_adminSubTab', adminSubTab);
+  }, [adminSubTab]);
+
   const [chartView, setChartView] = useState<'day' | 'week' | 'month'>('day'); 
   const [chartFocusDate, setChartFocusDate] = useState(() => getLocalDateString(new Date()));
   const [filterDate, setFilterDate] = useState(''); 
@@ -245,7 +275,7 @@ const App = () => {
       return;
     }
 
-    const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+    const headers = parseCSVRow(lines[0]).map(h => h.toLowerCase());
     
     const idx = {
       ts: headers.findIndex(h => h.includes("dấu thời gian") || h.includes("thời gian")),
@@ -269,22 +299,17 @@ const App = () => {
 
     try {
       for (let i = 0; i < dataRows.length; i++) {
-        const row = dataRows[i].match(/(".*?"|[^",\r\n]+)(?=\s*,|\s*$)/g) || [];
+        const row = parseCSVRow(dataRows[i]);
         if (row.length < 3) continue;
 
-        const clean = (val: string) => val ? val.replace(/"/g, '').trim() : '';
-        
-        const timestampRaw = idx.ts !== -1 ? clean(row[idx.ts]) : '';
-        const dateRaw = idx.date !== -1 ? clean(row[idx.date]) : '';
+        const timestampRaw = idx.ts !== -1 ? row[idx.ts] : '';
+        const dateRaw = idx.date !== -1 ? row[idx.date] : '';
         
         let dateStr = '';
         const strToParse = timestampRaw || dateRaw;
 
-        // --- CƠ CHẾ NHẬN DIỆN NGÀY THÁNG MỚI (CHẶT CHẼ HƠN) ---
         if (strToParse) {
-          // Bắt định dạng YYYY-MM-DD
           const matchYMD = strToParse.match(/(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
-          // Bắt định dạng DD-MM-YYYY hoặc DD/MM/YYYY
           const matchDMY = strToParse.match(/(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})/);
 
           if (matchYMD) {
@@ -292,7 +317,6 @@ const App = () => {
           } else if (matchDMY) {
             dateStr = `${matchDMY[3]}-${matchDMY[2].padStart(2, '0')}-${matchDMY[1].padStart(2, '0')}`;
           } else {
-            // Fallback
             const dateObj = new Date(strToParse.replace(/-/g, "/"));
             if (!isNaN(dateObj.getTime())) {
               dateStr = getLocalDateString(dateObj);
@@ -300,22 +324,21 @@ const App = () => {
           }
         }
 
-        // TỐI QUAN TRỌNG: Nếu dòng này trống, lỗi, không xác định được ngày -> BỎ QUA KHÔNG IMPORT DÒNG NÀY NỮA
         if (!dateStr) continue;
 
         const docData = {
           id: Date.now() + i,
           date: dateStr,
           timestamp: timestampRaw || dateStr || new Date().toLocaleString('vi-VN'),
-          agencyName: idx.agency !== -1 ? clean(row[idx.agency]) : 'N/A',
-          staffName: idx.staff !== -1 ? clean(row[idx.staff]) : 'N/A',
-          staffPhone: idx.sPhone !== -1 ? clean(row[idx.sPhone]).slice(-4) : '',
-          staffCount: idx.sCount !== -1 ? (parseInt(clean(row[idx.sCount])) || 1) : 1,
-          customerName: idx.cName !== -1 ? clean(row[idx.cName]) : '',
-          customerCount: idx.cCount !== -1 ? parseInt(clean(row[idx.cCount])) || 0 : 0,
-          customerPhone: idx.cPhone !== -1 ? clean(row[idx.cPhone]).slice(-4) : '',
-          customerAge: idx.age !== -1 ? clean(row[idx.age]) : '',
-          hasCustomer: idx.cCount !== -1 ? (parseInt(clean(row[idx.cCount])) || 0) > 0 : false,
+          agencyName: idx.agency !== -1 ? row[idx.agency] || 'N/A' : 'N/A',
+          staffName: idx.staff !== -1 ? row[idx.staff] || 'N/A' : 'N/A',
+          staffPhone: idx.sPhone !== -1 ? row[idx.sPhone].slice(-4) : '',
+          staffCount: idx.sCount !== -1 ? (parseInt(row[idx.sCount]) || 1) : 1,
+          customerName: idx.cName !== -1 ? row[idx.cName] : '',
+          customerCount: idx.cCount !== -1 ? (parseInt(row[idx.cCount]) || 0) : 0,
+          customerPhone: idx.cPhone !== -1 ? row[idx.cPhone].slice(-4) : '',
+          customerAge: idx.age !== -1 ? row[idx.age] : '',
+          hasCustomer: idx.cCount !== -1 ? (parseInt(row[idx.cCount]) || 0) > 0 : false,
           isImported: true
         };
 
@@ -759,9 +782,7 @@ const App = () => {
                   <div className="flex bg-slate-800 p-1 rounded-lg w-full sm:w-auto overflow-x-auto whitespace-nowrap text-center">
                     <button onClick={() => setAdminSubTab('list')} className={`flex-1 px-4 py-1.5 text-sm font-semibold rounded-md ${adminSubTab === 'list' ? 'bg-[#ea580c]' : ''}`}>Danh sách</button>
                     <button onClick={() => setAdminSubTab('chart')} className={`flex-1 px-4 py-1.5 text-sm font-semibold rounded-md ${adminSubTab === 'chart' ? 'bg-[#ea580c]' : ''}`}>Thống kê</button>
-                    <button onClick={() => setAdminSubTab('manual')} className={`flex-1 px-4 py-1.5 text-sm font-semibold rounded-md ${adminSubTab === 'manual' ? 'bg-[#ea580c]' : ''}`}>Nhập liệu cũ</button>
-                    <button onClick={() => setAdminSubTab('import')} className={`flex-1 px-4 py-1.5 text-sm font-semibold rounded-md ${adminSubTab === 'import' ? 'bg-[#ea580c]' : ''}`}>Nhập Excel/CSV</button>
-                    {adminEmail === ROOT_ADMIN_EMAIL && <button onClick={() => setAdminSubTab('settings')} className={`flex-1 px-4 py-1.5 text-sm font-semibold rounded-md ${adminSubTab === 'settings' ? 'bg-[#ea580c]' : ''}`}>Cài đặt</button>}
+                    {adminEmail === ROOT_ADMIN_EMAIL && <button onClick={() => setAdminSubTab('settings')} className={`flex-1 px-4 py-1.5 text-sm font-semibold rounded-md ${adminSubTab === 'settings' ? 'bg-[#ea580c]' : ''}`}>Cài đặt hệ thống</button>}
                   </div>
                 </div>
 
@@ -842,7 +863,14 @@ const App = () => {
                       <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center mb-8 gap-4">
                         <div className="flex items-center space-x-3">
                           <BarChart3 size={24} className="text-[#ea580c]" />
-                          <h3 className="font-bold text-lg text-slate-800">Thống kê lưu lượng khách</h3>
+                          <div>
+                            <h3 className="font-bold text-lg text-slate-800">Thống kê lưu lượng khách</h3>
+                            <p className="text-xs font-medium text-slate-500">
+                              {chartView === 'day' && chartData.length > 0 
+                                ? `Tuần từ ${chartData[0].label} đến ${chartData[chartData.length - 1].label}` 
+                                : chartView === 'week' ? '5 tuần gần nhất' : '6 tháng gần nhất'}
+                            </p>
+                          </div>
                         </div>
                         
                         <div className="flex flex-wrap items-center gap-3 w-full xl:w-auto">
@@ -851,7 +879,7 @@ const App = () => {
                               onClick={() => {
                                 const [y, m, d] = chartFocusDate.split('-').map(Number);
                                 const date = new Date(y, m - 1, d);
-                                date.setDate(date.getDate() - 7);
+                                date.setDate(date.getDate() - (chartView === 'day' ? 7 : chartView === 'week' ? 35 : 180));
                                 setChartFocusDate(getLocalDateString(date));
                               }}
                               className="p-1 hover:bg-white rounded shadow-sm transition-all"
@@ -868,7 +896,7 @@ const App = () => {
                               onClick={() => {
                                 const [y, m, d] = chartFocusDate.split('-').map(Number);
                                 const date = new Date(y, m - 1, d);
-                                date.setDate(date.getDate() + 7);
+                                date.setDate(date.getDate() + (chartView === 'day' ? 7 : chartView === 'week' ? 35 : 180));
                                 setChartFocusDate(getLocalDateString(date));
                               }}
                               className="p-1 hover:bg-white rounded shadow-sm transition-all"
@@ -905,7 +933,7 @@ const App = () => {
                             ))}
                           </div>
 
-                          {/* Chart Area with Cải tiến rõ nét viền trục X-Y */}
+                          {/* Chart Area with Grid and Axes */}
                           <div className="flex-1 relative border-l-[3px] border-b-[3px] border-slate-400">
                             {/* Horizontal Grids (Lưới mờ) */}
                             <div className="absolute inset-0 flex flex-col justify-between pointer-events-none">
@@ -919,10 +947,10 @@ const App = () => {
                               {chartData.map((d: any) => (
                                 <div key={d.key} className="flex flex-col items-center flex-1 h-full relative group justify-end pb-[1px]">
                                   <div className="flex items-end justify-center space-x-1 sm:space-x-2 w-full h-full relative z-10">
-                                    <div style={{ height: `${d.customers === 0 ? 0 : (d.customers / maxChartValue) * 100}%` }} className="w-full max-w-[28px] bg-gradient-to-t from-orange-600 to-orange-400 rounded-t-sm shadow-[0_0_10px_rgba(234,88,12,0.3)] relative transition-all group-hover:brightness-125 min-h-[2px]">
+                                    <div style={{ height: `${d.customers === 0 ? 0 : Math.max((d.customers / maxChartValue) * 100, 4)}%` }} className="w-full max-w-[28px] bg-gradient-to-t from-orange-600 to-orange-400 rounded-t-sm shadow-[0_0_10px_rgba(234,88,12,0.3)] relative transition-all group-hover:brightness-125">
                                       {d.customers > 0 && <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[10px] font-bold text-orange-400">{d.customers}</span>}
                                     </div>
-                                    <div style={{ height: `${d.staff === 0 ? 0 : (d.staff / maxChartValue) * 100}%` }} className="w-full max-w-[28px] bg-gradient-to-t from-cyan-600 to-cyan-400 rounded-t-sm shadow-[0_0_10px_rgba(6,182,212,0.3)] relative transition-all group-hover:brightness-125 min-h-[2px]">
+                                    <div style={{ height: `${d.staff === 0 ? 0 : Math.max((d.staff / maxChartValue) * 100, 4)}%` }} className="w-full max-w-[28px] bg-gradient-to-t from-cyan-600 to-cyan-400 rounded-t-sm shadow-[0_0_10px_rgba(6,182,212,0.3)] relative transition-all group-hover:brightness-125">
                                       {d.staff > 0 && <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[10px] font-bold text-cyan-400">{d.staff}</span>}
                                     </div>
                                   </div>
@@ -936,74 +964,14 @@ const App = () => {
                     </div>
                   )}
 
-                  {adminSubTab === 'manual' && (
-                    <div className="max-w-xl mx-auto animate-in fade-in">
-                      <div className="bg-white p-8 rounded-xl shadow-sm border">
-                        <div className="flex items-center space-x-3 mb-6 text-slate-800">
-                          <History size={24} className="text-[#ea580c]" />
-                          <h3 className="font-bold text-lg">Cập nhật dữ liệu quá khứ</h3>
-                        </div>
-                        <p className="text-slate-500 text-sm mb-6">Sử dụng tính năng này để bù đắp số liệu cho các ngày chưa có dữ liệu hệ thống.</p>
-                        
-                        <form onSubmit={handleManualSubmit} className="space-y-6">
-                          <div className="space-y-2">
-                            <label className="text-sm font-bold text-slate-700">Chọn ngày</label>
-                            <input type="date" required value={manualDate} onChange={e => setManualDate(e.target.value)} className="w-full px-4 py-3 border rounded-lg outline-none focus:ring-2 focus:ring-[#ea580c]" />
-                          </div>
-                          <div className="grid grid-cols-2 gap-4">
-                            <div className="space-y-2">
-                              <label className="text-sm font-bold text-slate-700">Lượng CVKD</label>
-                              <input type="number" min="0" required value={manualStaff} onChange={e => setManualStaff(parseInt(e.target.value))} className="w-full px-4 py-3 border rounded-lg outline-none focus:ring-2 focus:ring-[#ea580c]" />
-                            </div>
-                            <div className="space-y-2">
-                              <label className="text-sm font-bold text-slate-700">Lượng Khách hàng</label>
-                              <input type="number" min="0" required value={manualCustomer} onChange={e => setManualCustomer(parseInt(e.target.value))} className="w-full px-4 py-3 border rounded-lg outline-none focus:ring-2 focus:ring-[#ea580c]" />
-                            </div>
-                          </div>
-                          <button type="submit" className="w-full bg-[#ea580c] text-white py-3 rounded-lg font-bold shadow-lg hover:bg-[#c2410c] transition-all flex items-center justify-center gap-2">
-                            <Plus size={20} /> Lưu dữ liệu
-                          </button>
-                        </form>
-                      </div>
-                    </div>
-                  )}
-
-                  {adminSubTab === 'import' && (
-                    <div className="max-w-2xl mx-auto animate-in fade-in">
-                      <div className="bg-white p-8 rounded-xl shadow-sm border text-center">
-                        <div className="bg-orange-50 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 text-center">
-                          <FileSpreadsheet size={40} className="text-[#ea580c] text-center" />
-                        </div>
-                        <h3 className="text-xl font-bold mb-2">Nhập dữ liệu từ Excel/CSV</h3>
-                        <p className="text-slate-500 text-sm mb-8 text-center">Hệ thống sẽ tự động đồng bộ hóa các cột thông tin từ tệp Excel của Thắng Lợi Group Gallery.</p>
-                        
-                        {importLoading ? (
-                          <div className="space-y-4 text-center">
-                            <div className="w-full bg-slate-200 h-4 rounded-full overflow-hidden text-center">
-                              <div className="bg-[#ea580c] h-full transition-all duration-300 text-center" style={{ width: `${importProgress}%` }}></div>
-                            </div>
-                            <p className="text-sm font-bold text-[#ea580c] text-center">Đang xử lý... {importProgress}%</p>
-                          </div>
-                        ) : (
-                          <div className="space-y-6 text-center">
-                            <label className="block w-full border-2 border-dashed border-slate-200 rounded-2xl p-12 hover:border-[#ea580c] hover:bg-orange-50/30 transition-all cursor-pointer text-center">
-                              <input type="file" accept=".csv" className="hidden" onChange={handleFileUpload} />
-                              <Upload className="mx-auto text-slate-400 mb-4" size={32} />
-                              <span className="block font-bold text-slate-700 mb-1 text-center">Bấm để chọn tệp CSV</span>
-                              <span className="text-xs text-slate-400 uppercase tracking-widest font-bold text-center">Chỉ hỗ trợ định dạng .CSV</span>
-                            </label>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  {adminSubTab === 'settings' && (
-                    <div className="max-w-2xl mx-auto animate-in fade-in text-center">
-                      <div className="bg-white p-8 rounded-xl border shadow-sm space-y-8 text-center">
-                        <div>
+                  {adminSubTab === 'settings' && adminEmail === ROOT_ADMIN_EMAIL && (
+                    <div className="animate-in fade-in grid grid-cols-1 lg:grid-cols-2 gap-6">
+                      
+                      {/* Cột 1: Quản lý Quản trị viên & Nhập liệu thủ công */}
+                      <div className="space-y-6">
+                        <div className="bg-white p-6 rounded-xl border shadow-sm">
                           <div className="flex items-center space-x-3 mb-6 text-slate-800">
-                            <Settings size={24} className="text-slate-500" />
+                            <Settings size={20} className="text-slate-500" />
                             <h3 className="font-bold text-lg">Quản lý Quản trị viên</h3>
                           </div>
                           <form onSubmit={e => {
@@ -1012,48 +980,101 @@ const App = () => {
                               setAdminList([...adminList, newAdminEmail]);
                               setNewAdminEmail('');
                             }
-                          }} className="flex gap-3 mb-8 text-center">
-                            <input type="email" required value={newAdminEmail} onChange={e => setNewAdminEmail(e.target.value)} placeholder="Nhập email mới..." className="flex-1 px-4 py-2.5 border rounded-lg text-sm outline-none focus:ring-2 focus:ring-slate-300" />
-                            <button type="submit" className="bg-slate-800 text-white px-6 py-2.5 rounded-lg text-sm font-bold flex items-center hover:bg-slate-900 transition-all"><Plus size={18} className="mr-1"/> Thêm</button>
+                          }} className="flex gap-2 mb-6">
+                            <input type="email" required value={newAdminEmail} onChange={e => setNewAdminEmail(e.target.value)} placeholder="Thêm email admin..." className="flex-1 px-4 py-2 border rounded-lg text-sm outline-none focus:ring-2 focus:ring-slate-300" />
+                            <button type="submit" className="bg-slate-800 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center hover:bg-slate-900 transition-all"><Plus size={16}/></button>
                           </form>
                           
-                          <div className="space-y-3">
+                          <div className="space-y-2">
                             {adminList.map(email => (
-                              <div key={email} className="flex justify-between items-center p-4 bg-slate-50 rounded-xl border border-slate-100 transition-all hover:border-slate-300">
+                              <div key={email} className="flex justify-between items-center p-3 bg-slate-50 rounded-lg border border-slate-100 transition-all hover:border-slate-300">
                                 <div className="flex items-center space-x-3">
-                                  <div className="w-8 h-8 bg-white border rounded-full flex items-center justify-center text-slate-400"><UserIcon size={16} /></div>
+                                  <div className="w-6 h-6 bg-white border rounded-full flex items-center justify-center text-slate-400"><UserIcon size={12} /></div>
                                   <span className="text-sm font-bold text-slate-700">{email}</span>
                                 </div>
                                 {email !== ROOT_ADMIN_EMAIL && (
-                                  <button onClick={() => setAdminList(adminList.filter(e => e !== email))} className="text-slate-300 hover:text-red-500 p-2 transition-colors"><Trash2 size={20}/></button>
+                                  <button onClick={() => setAdminList(adminList.filter(e => e !== email))} className="text-slate-300 hover:text-red-500 p-1.5 transition-colors"><Trash2 size={16}/></button>
                                 )}
-                                {email === ROOT_ADMIN_EMAIL && <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest bg-slate-100 px-2 py-1 rounded">Chủ sở hữu</span>}
+                                {email === ROOT_ADMIN_EMAIL && <span className="text-[9px] font-extrabold text-slate-400 uppercase tracking-widest bg-slate-100 px-2 py-1 rounded">Chủ</span>}
                               </div>
                             ))}
                           </div>
                         </div>
 
-                        {adminEmail === ROOT_ADMIN_EMAIL && (
-                          <div className="pt-8 border-t border-red-100 text-center">
-                             <div className="flex items-center space-x-3 mb-4 text-red-600 text-center">
-                               <AlertTriangle size={24} />
-                               <h3 className="font-bold text-lg uppercase tracking-tight">Khu vực nguy hiểm</h3>
-                             </div>
-                             <div className="bg-red-50 p-6 rounded-2xl border border-red-100 text-center">
-                                <p className="text-sm text-red-800 font-medium mb-4 text-center">
-                                  Hành động này sẽ xóa sạch toàn bộ {checkIns.length} dòng dữ liệu đã lưu trong hệ thống.
-                                </p>
-                                <button 
-                                  onClick={handleClearAllData}
-                                  className="w-full sm:w-auto px-6 py-3 bg-red-600 text-white rounded-xl font-bold flex items-center justify-center space-x-2 hover:bg-red-700 transition-all shadow-lg text-center"
-                                >
-                                  <Trash2 size={20} />
-                                  <span>Xóa Sạch Toàn Bộ Dữ Liệu</span>
-                                </button>
-                             </div>
+                        <div className="bg-white p-6 rounded-xl border shadow-sm">
+                          <div className="flex items-center space-x-3 mb-4 text-slate-800">
+                            <History size={20} className="text-[#ea580c]" />
+                            <h3 className="font-bold text-lg">Cập nhật dữ liệu quá khứ</h3>
                           </div>
-                        )}
+                          <p className="text-slate-500 text-xs mb-6">Bù đắp số liệu cho các ngày chưa sử dụng hệ thống.</p>
+                          
+                          <form onSubmit={handleManualSubmit} className="space-y-4">
+                            <div className="space-y-1.5">
+                              <label className="text-xs font-bold text-slate-700">Chọn ngày</label>
+                              <input type="date" required value={manualDate} onChange={e => setManualDate(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm outline-none focus:ring-2 focus:ring-[#ea580c]" />
+                            </div>
+                            <div className="grid grid-cols-2 gap-4">
+                              <div className="space-y-1.5">
+                                <label className="text-xs font-bold text-slate-700">Lượng CVKD</label>
+                                <input type="number" min="0" required value={manualStaff} onChange={e => setManualStaff(parseInt(e.target.value))} className="w-full px-3 py-2 border rounded-lg text-sm outline-none focus:ring-2 focus:ring-[#ea580c]" />
+                              </div>
+                              <div className="space-y-1.5">
+                                <label className="text-xs font-bold text-slate-700">Lượng Khách</label>
+                                <input type="number" min="0" required value={manualCustomer} onChange={e => setManualCustomer(parseInt(e.target.value))} className="w-full px-3 py-2 border rounded-lg text-sm outline-none focus:ring-2 focus:ring-[#ea580c]" />
+                              </div>
+                            </div>
+                            <button type="submit" className="w-full bg-[#ea580c] text-white py-2 rounded-lg text-sm font-bold shadow hover:bg-[#c2410c] transition-all flex items-center justify-center gap-2 mt-2">
+                              <Plus size={16} /> Thêm dữ liệu
+                            </button>
+                          </form>
+                        </div>
                       </div>
+
+                      {/* Cột 2: Nhập Excel & Clear Data */}
+                      <div className="space-y-6">
+                        <div className="bg-white p-6 rounded-xl border shadow-sm text-center">
+                          <div className="bg-orange-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                            <FileSpreadsheet size={32} className="text-[#ea580c]" />
+                          </div>
+                          <h3 className="text-lg font-bold mb-2">Nhập dữ liệu từ Excel/CSV</h3>
+                          <p className="text-slate-500 text-xs mb-6">Hệ thống sẽ tự động đồng bộ hóa các cột thông tin từ tệp Excel của Thắng Lợi Group Gallery.</p>
+                          
+                          {importLoading ? (
+                            <div className="space-y-3">
+                              <div className="w-full bg-slate-200 h-3 rounded-full overflow-hidden">
+                                <div className="bg-[#ea580c] h-full transition-all duration-300" style={{ width: `${importProgress}%` }}></div>
+                              </div>
+                              <p className="text-xs font-bold text-[#ea580c]">Đang xử lý... {importProgress}%</p>
+                            </div>
+                          ) : (
+                            <label className="block w-full border-2 border-dashed border-slate-200 rounded-xl p-8 hover:border-[#ea580c] hover:bg-orange-50/30 transition-all cursor-pointer">
+                              <input type="file" accept=".csv" className="hidden" onChange={handleFileUpload} />
+                              <Upload className="mx-auto text-slate-400 mb-3" size={24} />
+                              <span className="block font-bold text-sm text-slate-700 mb-1">Bấm để chọn tệp CSV</span>
+                            </label>
+                          )}
+                        </div>
+
+                        <div className="bg-white rounded-xl border border-red-200 shadow-sm overflow-hidden">
+                          <div className="bg-red-50 p-4 border-b border-red-100 flex items-center space-x-2 text-red-600">
+                            <AlertTriangle size={20} />
+                            <h3 className="font-bold uppercase tracking-tight text-sm">Khu vực nguy hiểm</h3>
+                          </div>
+                          <div className="p-6 text-center">
+                            <p className="text-xs text-red-800 font-medium mb-4">
+                              Hành động này sẽ xóa sạch toàn bộ <b>{checkIns.length}</b> dòng dữ liệu đã lưu trong hệ thống. Chỉ sử dụng khi cần làm sạch để nhập lại từ đầu.
+                            </p>
+                            <button 
+                              onClick={handleClearAllData}
+                              className="w-full px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-bold flex items-center justify-center space-x-2 hover:bg-red-700 transition-all shadow-md"
+                            >
+                              <Trash2 size={16} />
+                              <span>Xóa Sạch Dữ Liệu</span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+
                     </div>
                   )}
                 </div>
