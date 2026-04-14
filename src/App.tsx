@@ -65,7 +65,7 @@ const getLocalDateString = (date: Date) => {
   return `${y}-${m}-${d}`;
 };
 
-// Trình phân tích CSV chuẩn xác (không bỏ qua ô trống)
+// Trình phân tích CSV chuẩn xác
 const parseCSVRow = (str: string) => {
   const result = [];
   let current = '';
@@ -107,7 +107,6 @@ const App = () => {
   const [adminEmail, setAdminEmail] = useState('');
   const [adminError, setAdminError] = useState('');
   
-  // Điều chỉnh để các tab cũ tự động chuyển về đúng chỗ nếu còn kẹt trong localStorage
   const [adminSubTab, setAdminSubTab] = useState(() => {
     const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('twc_adminSubTab') : 'list';
     return ['list', 'chart', 'settings'].includes(saved || '') ? saved || 'list' : 'list';
@@ -295,15 +294,30 @@ const App = () => {
     const total = dataRows.length;
     
     let batch = writeBatch(db);
-    let count = 0;
+    let batchCount = 0;
+    let validCount = 0;
 
     try {
       for (let i = 0; i < dataRows.length; i++) {
         const row = parseCSVRow(dataRows[i]);
+
+        // Cập nhật giao diện mượt mà, chống đứng máy trình duyệt
+        if (i % 50 === 0) {
+          setImportProgress(Math.round((i / total) * 100));
+          await new Promise(r => setTimeout(r, 0));
+        }
+
         if (row.length < 3) continue;
 
-        const timestampRaw = idx.ts !== -1 ? row[idx.ts] : '';
-        const dateRaw = idx.date !== -1 ? row[idx.date] : '';
+        // Xử lý an toàn tuyệt đối chống lỗi undefined (bắt nguồn từ việc Excel bị rỗng cột ở đuôi)
+        const getStr = (index: number) => (index !== -1 && row[index] !== undefined && row[index] !== null) ? String(row[index]).trim() : '';
+        const getNum = (index: number, defaultVal: number) => {
+          const val = parseInt(getStr(index));
+          return isNaN(val) ? defaultVal : val;
+        };
+
+        const timestampRaw = getStr(idx.ts);
+        const dateRaw = getStr(idx.date);
         
         let dateStr = '';
         const strToParse = timestampRaw || dateRaw;
@@ -330,37 +344,45 @@ const App = () => {
           id: Date.now() + i,
           date: dateStr,
           timestamp: timestampRaw || dateStr || new Date().toLocaleString('vi-VN'),
-          agencyName: idx.agency !== -1 ? row[idx.agency] || 'N/A' : 'N/A',
-          staffName: idx.staff !== -1 ? row[idx.staff] || 'N/A' : 'N/A',
-          staffPhone: idx.sPhone !== -1 ? row[idx.sPhone].slice(-4) : '',
-          staffCount: idx.sCount !== -1 ? (parseInt(row[idx.sCount]) || 1) : 1,
-          customerName: idx.cName !== -1 ? row[idx.cName] : '',
-          customerCount: idx.cCount !== -1 ? (parseInt(row[idx.cCount]) || 0) : 0,
-          customerPhone: idx.cPhone !== -1 ? row[idx.cPhone].slice(-4) : '',
-          customerAge: idx.age !== -1 ? row[idx.age] : '',
-          hasCustomer: idx.cCount !== -1 ? (parseInt(row[idx.cCount]) || 0) > 0 : false,
+          agencyName: getStr(idx.agency) || 'N/A',
+          staffName: getStr(idx.staff) || 'N/A',
+          staffPhone: getStr(idx.sPhone).slice(-4),
+          staffCount: getNum(idx.sCount, 1),
+          customerName: getStr(idx.cName),
+          customerCount: getNum(idx.cCount, 0),
+          customerPhone: getStr(idx.cPhone).slice(-4),
+          customerAge: getStr(idx.age),
+          hasCustomer: getNum(idx.cCount, 0) > 0,
           isImported: true
         };
 
         const newDocRef = doc(collectionPath);
         batch.set(newDocRef, docData);
         
-        count++;
-        if (count % 400 === 0) {
+        batchCount++;
+        validCount++;
+
+        // Batch ghi tối đa 400 dòng 1 lần theo giới hạn của Firebase
+        if (batchCount === 400) {
           await batch.commit();
           batch = writeBatch(db);
-          setImportProgress(Math.round((i / total) * 100));
+          batchCount = 0;
         }
       }
       
-      await batch.commit();
+      // Chốt nốt dữ liệu còn sót lại ở lần lặp cuối
+      if (batchCount > 0) {
+        await batch.commit();
+      }
+
       setImportProgress(100);
       setTimeout(() => {
         setImportLoading(false);
-        alert(`Đã nhập thành công ${count} dòng dữ liệu hợp lệ!`);
+        alert(`Đã nhập thành công ${validCount} dòng dữ liệu hợp lệ!`);
         setAdminSubTab('list');
       }, 500);
     } catch (err: any) {
+      console.error(err);
       alert("Lỗi khi nhập dữ liệu: " + err.message);
       setImportLoading(false);
     }
@@ -387,14 +409,18 @@ const App = () => {
         batch.delete(docRef);
         count++;
 
-        if (count % 450 === 0) {
+        if (count % 50 === 0) {
+          setImportProgress(Math.round((count / total) * 100));
+          await new Promise(r => setTimeout(r, 0));
+        }
+
+        if (count % 400 === 0) {
           await batch.commit();
           batch = writeBatch(db);
-          setImportProgress(Math.round((count / total) * 100));
         }
       }
 
-      if (count % 450 !== 0) {
+      if (count % 400 !== 0) {
         await batch.commit();
       }
 
