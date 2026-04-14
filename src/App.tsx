@@ -12,8 +12,6 @@ import {
   Trash2, 
   Plus, 
   Download, 
-  Camera, 
-  Loader2, 
   History,
   FileSpreadsheet,
   Upload,
@@ -29,7 +27,6 @@ import {
   onAuthStateChanged, 
   GoogleAuthProvider, 
   signInWithPopup, 
-  signInWithRedirect, 
   getRedirectResult, 
   signOut 
 } from 'firebase/auth';
@@ -102,7 +99,6 @@ const App = () => {
   const [checkIns, setCheckIns] = useState<any[]>([]); 
   const [showSuccess, setShowSuccess] = useState(false);
   const [user, setUser] = useState<any>(null);
-  const [isExporting, setIsExporting] = useState(false);
 
   // ADMIN STATE
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
@@ -393,7 +389,7 @@ const App = () => {
 
   const maxChartValue = useMemo(() => {
     if (chartData.length === 0) return 5;
-    const base = chartMetric === 'role' ? Math.max(...chartData.map(d => Math.max(d.customers, d.staff))) : Math.max(...chartData.map(d => AGE_GROUPS.reduce((s, ag) => s + d[ag], 0)));
+    const base = chartMetric === 'role' ? Math.max(...chartData.map((d: any) => Math.max(d.customers, d.staff))) : Math.max(...chartData.map((d: any) => AGE_GROUPS.reduce((s, ag) => s + d[ag], 0)));
     return Math.ceil(Math.max(base, 5) * 1.3);
   }, [chartData, chartMetric]);
 
