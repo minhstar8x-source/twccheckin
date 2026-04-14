@@ -208,6 +208,11 @@ const App = () => {
   // --- FIRESTORE DATA ---
   useEffect(() => {
     if (!user || !firebaseConfig.apiKey) return; 
+    
+    // GIẢI PHÁP TỐI THƯỢNG: NGẮT KẾT NỐI KHI ĐANG XỬ LÝ NHIỀU DỮ LIỆU
+    // Nếu đang xóa sạch hoặc nhập file, ta huỷ listener để Firebase không làm đơ giao diện
+    if (importLoading) return;
+
     const collectionPath = collection(db, 'artifacts', appId, 'public', 'data', 'gallery_checkins');
     const unsubscribe = onSnapshot(collectionPath, (snapshot) => {
       const data = snapshot.docs.map((doc: any) => ({ firebaseId: doc.id, ...doc.data() }));
@@ -216,8 +221,9 @@ const App = () => {
     }, (error: any) => {
       console.error("Firestore Error:", error);
     });
+    
     return () => unsubscribe();
-  }, [user]);
+  }, [user, importLoading]); // Phụ thuộc vào importLoading
 
   // --- FORM HANDLERS ---
   const [hasCustomer, setHasCustomer] = useState(true);
@@ -378,13 +384,13 @@ const App = () => {
         batchCount++;
         validCount++;
 
-        // GIẢI PHÁP CHỐNG TREO: Tăng delay lên 100ms
+        // Chia chunk 100 dòng
         if (batchCount >= 100) {
           await batch.commit();
           batch = writeBatch(db);
           batchCount = 0;
           setImportProgress(Math.round(((i + 1) / total) * 100));
-          await new Promise(r => setTimeout(r, 100)); // Nhường bộ nhớ cho trình duyệt xử lý
+          await new Promise(r => setTimeout(r, 100)); 
         } else if (i % 25 === 0) {
           setImportProgress(Math.round(((i + 1) / total) * 100));
           await new Promise(r => setTimeout(r, 5));
@@ -412,20 +418,21 @@ const App = () => {
   const handleClearAllData = async () => {
     if (!window.confirm("CẢNH BÁO NGUY HIỂM: Hành động này sẽ xóa vĩnh viễn TOÀN BỘ dữ liệu check-in trong hệ thống. Bạn có chắc chắn muốn thực hiện?")) return;
     
-    setImportLoading(true);
-    setImportProgress(0);
-    
+    // Lưu lại danh sách ID cần xóa vào bộ nhớ đệm trước khi cờ Loading bật
     const itemsToDelete = [...checkIns];
     const total = itemsToDelete.length;
 
     if (total === 0) {
-      setImportLoading(false);
       alert("Chưa có dữ liệu nào để xóa.");
       return;
     }
 
+    // Khi bật cái này lên, useEffect trên kia sẽ tự động TẮT Firebase OnSnapshot
+    setImportLoading(true);
+    setImportProgress(0);
+
     try {
-      const chunkSize = 100;
+      const chunkSize = 50; // Giảm xuống 50 để chạy siêu an toàn
       for (let i = 0; i < total; i += chunkSize) {
         const chunk = itemsToDelete.slice(i, i + chunkSize);
         const batch = writeBatch(db);
@@ -437,11 +444,11 @@ const App = () => {
 
         await batch.commit();
         setImportProgress(Math.round(((i + chunk.length) / total) * 100));
-        await new Promise(r => setTimeout(r, 100)); // Nghỉ 100ms chống đơ biểu đồ
+        await new Promise(r => setTimeout(r, 100)); // Nhường luồng cho UI chạy progress bar
       }
 
       setTimeout(() => {
-        setImportLoading(false);
+        setImportLoading(false); // Khi xong mới bật OnSnapshot chạy lại
         alert(`Đã xóa sạch toàn bộ ${total} dòng dữ liệu.`);
       }, 500);
     } catch (err: any) {
@@ -522,9 +529,8 @@ const App = () => {
   };
 
   // --- CHART LOGIC ---
-  // BLOCK TÍNH TOÁN BẢNG: Sẽ chặn việc tính toán khi đang load Import/Delete để chống đơ máy
   const filteredCheckIns = useMemo(() => {
-    if (importLoading) return []; // <-- Chìa khóa chống đơ máy 
+    if (importLoading) return []; 
     return checkIns.filter((item: any) => {
       const matchDate = filterDate ? item.date === filterDate : true;
       let matchType = true;
@@ -534,9 +540,8 @@ const App = () => {
     });
   }, [checkIns, filterDate, filterType, importLoading]);
 
-  // BLOCK TÍNH TOÁN BIỂU ĐỒ: Ngừng hoạt động 100% khi đang Load dữ liệu
   const chartData = useMemo<any[]>(() => {
-    if (importLoading) return []; // <-- Chìa khóa chống đơ máy
+    if (importLoading) return []; 
 
     const dataMap: any = {};
     const [y, m, d] = chartFocusDate.split('-').map(Number);
