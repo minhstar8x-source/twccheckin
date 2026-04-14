@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Building2, 
-  User, 
+  User as UserIcon, 
   Users, 
   CheckCircle2, 
   ShieldCheck, 
@@ -979,6 +979,21 @@ const App = () => {
                             <input type="email" required value={newAdminEmail} onChange={e => setNewAdminEmail(e.target.value)} placeholder="Nhập email mới..." className="flex-1 px-4 py-2.5 border rounded-lg text-sm outline-none focus:ring-2 focus:ring-slate-300" />
                             <button type="submit" className="bg-slate-800 text-white px-6 py-2.5 rounded-lg text-sm font-bold flex items-center hover:bg-slate-900 transition-all"><Plus size={18} className="mr-1"/> Thêm</button>
                           </form>
+                          
+                          <div className="space-y-3">
+                            {adminList.map(email => (
+                              <div key={email} className="flex justify-between items-center p-4 bg-slate-50 rounded-xl border border-slate-100 transition-all hover:border-slate-300">
+                                <div className="flex items-center space-x-3">
+                                  <div className="w-8 h-8 bg-white border rounded-full flex items-center justify-center text-slate-400"><UserIcon size={16} /></div>
+                                  <span className="text-sm font-bold text-slate-700">{email}</span>
+                                </div>
+                                {email !== ROOT_ADMIN_EMAIL && (
+                                  <button onClick={() => setAdminList(adminList.filter(e => e !== email))} className="text-slate-300 hover:text-red-500 p-2 transition-colors"><Trash2 size={20}/></button>
+                                )}
+                                {email === ROOT_ADMIN_EMAIL && <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest bg-slate-100 px-2 py-1 rounded">Chủ sở hữu</span>}
+                              </div>
+                            ))}
+                          </div>
                         </div>
 
                         {adminEmail === ROOT_ADMIN_EMAIL && (
