@@ -157,7 +157,7 @@ const App = () => {
             await signInAnonymously(auth);
           }
         }
-      } catch (error) {
+      } catch (error: any) {
         console.error("Auth init error:", error);
       }
     };
@@ -268,26 +268,26 @@ const App = () => {
     setImportLoading(true);
     setImportProgress(0);
     
-    const lines = csvText.split(/\r?\n/).filter(line => line.trim() !== "");
+    const lines = csvText.split(/\r?\n/).filter((line: string) => line.trim() !== "");
     if (lines.length < 2) {
       alert("Tệp không có dữ liệu.");
       setImportLoading(false);
       return;
     }
 
-    const headers = parseCSVRow(lines[0]).map(h => h.toLowerCase());
+    const headers = parseCSVRow(lines[0]).map((h: string) => h.toLowerCase());
     
     const idx = {
-      ts: headers.findIndex(h => h.includes("dấu thời gian") || h.includes("thời gian")),
-      date: headers.findIndex(h => h.includes("ngày tham quan") || h.includes("ngày")),
-      agency: headers.findIndex(h => h.includes("tên đơn vị") || h.includes("đại lý")),
-      staff: headers.findIndex(h => h.includes("họ và tên cvtv") || h.includes("tên cvkd")),
-      sPhone: headers.findIndex(h => h.includes("số điện thoại cvtv") || h.includes("sđt cvkd") || h.includes("điện thoại cvtv")),
-      cName: headers.findIndex(h => h.includes("tên khách hàng") || h.includes("tên khách")),
-      cCount: headers.findIndex(h => h.includes("số lượng khách hàng") || h.includes("sl khách") || h.includes("số lượng khách")),
-      cPhone: headers.findIndex(h => h.includes("số điện thoại kh") || h.includes("sđt kh") || h.includes("điện thoại kh")),
-      age: headers.findIndex(h => h.includes("độ tuổi") || h.includes("tuổi")),
-      sCount: headers.findIndex(h => h.includes("số lượng cvtv") || h.includes("sl cvkd") || h.includes("số lượng cv"))
+      ts: headers.findIndex((h: string) => h.includes("dấu thời gian") || h.includes("thời gian")),
+      date: headers.findIndex((h: string) => h.includes("ngày tham quan") || h.includes("ngày")),
+      agency: headers.findIndex((h: string) => h.includes("tên đơn vị") || h.includes("đại lý")),
+      staff: headers.findIndex((h: string) => h.includes("họ và tên cvtv") || h.includes("tên cvkd")),
+      sPhone: headers.findIndex((h: string) => h.includes("số điện thoại cvtv") || h.includes("sđt cvkd") || h.includes("điện thoại cvtv")),
+      cName: headers.findIndex((h: string) => h.includes("tên khách hàng") || h.includes("tên khách")),
+      cCount: headers.findIndex((h: string) => h.includes("số lượng khách hàng") || h.includes("sl khách") || h.includes("số lượng khách")),
+      cPhone: headers.findIndex((h: string) => h.includes("số điện thoại kh") || h.includes("sđt kh") || h.includes("điện thoại kh")),
+      age: headers.findIndex((h: string) => h.includes("độ tuổi") || h.includes("tuổi")),
+      sCount: headers.findIndex((h: string) => h.includes("số lượng cvtv") || h.includes("sl cvkd") || h.includes("số lượng cv"))
     };
 
     const collectionPath = collection(db, 'artifacts', appId, 'public', 'data', 'gallery_checkins');
@@ -491,7 +491,7 @@ const App = () => {
     });
   }, [checkIns, filterDate, filterType]);
 
-  const chartData = useMemo(() => {
+  const chartData = useMemo<any[]>(() => {
     const dataMap: any = {};
     const [y, m, d] = chartFocusDate.split('-').map(Number);
     const baseDate = new Date(y, m - 1, d);
@@ -605,7 +605,7 @@ const App = () => {
         link.click();
         document.body.removeChild(link);
         setIsExporting(false);
-      } catch (e) {
+      } catch (e: any) {
         alert("Lỗi: Không thể lưu ảnh.");
         setIsExporting(false);
       }
@@ -623,13 +623,13 @@ const App = () => {
 
   const exportToExcel = () => {
     const headers = ['Thời gian', 'Đơn vị', 'CVKD', 'SL CVKD', 'Khách', 'SL Khách', 'Tổng'];
-    const rows = filteredCheckIns.map(item => [
+    const rows = filteredCheckIns.map((item: any) => [
       item.timestamp, item.agencyName, item.staffName, item.staffCount, 
       item.hasCustomer ? item.customerName : 'N/A', 
       item.customerCount, 
       (item.staffCount || 0) + (item.customerCount || 0)
     ]);
-    const csvContent = "\ufeff" + [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
+    const csvContent = "\ufeff" + [headers.join(','), ...rows.map((e: any[]) => e.join(','))].join('\n');
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
@@ -824,7 +824,7 @@ const App = () => {
                             {filteredCheckIns.length === 0 ? (
                               <tr><td colSpan={7} className="p-12 text-center text-slate-400 italic">Không tìm thấy dữ liệu</td></tr>
                             ) : (
-                              filteredCheckIns.map(item => (
+                              filteredCheckIns.map((item: any) => (
                                 <tr key={item.firebaseId} className="border-b hover:bg-slate-50 transition-colors">
                                   <td className="p-4 text-xs font-medium text-slate-500">{item.timestamp}</td>
                                   <td className="p-4"><div className="font-bold text-slate-900">{item.staffName}</div><div className="text-[#ea580c] text-xs font-medium">{item.agencyName}</div></td>
@@ -906,9 +906,15 @@ const App = () => {
                           </div>
 
                           <div className="flex bg-slate-100 p-1 rounded-lg">
-                            <button onClick={() => setChartView('day')} className={`px-4 py-1.5 text-xs font-bold rounded-md ${chartView === 'day' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Tuần</button>
-                            <button onClick={() => setChartView('week')} className={`px-4 py-1.5 text-xs font-bold rounded-md ${chartView === 'week' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Tháng</button>
-                            <button onClick={() => setChartView('month')} className={`px-4 py-1.5 text-xs font-bold rounded-md ${chartView === 'month' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Năm</button>
+                            {['day', 'week', 'month'].map((view: string) => (
+                              <button 
+                                key={view}
+                                onClick={() => setChartView(view as 'day' | 'week' | 'month')} 
+                                className={`px-4 py-1.5 text-xs font-bold rounded-md ${chartView === view ? 'bg-white shadow-sm' : 'text-slate-500'}`}
+                              >
+                                {view === 'day' ? 'Tuần' : view === 'week' ? 'Tháng' : 'Năm'}
+                              </button>
+                            ))}
                           </div>
 
                           <button onClick={exportChartImage} disabled={isExporting} className="bg-slate-800 text-white px-4 py-2 rounded-lg text-xs font-bold flex items-center shadow hover:bg-slate-900 transition-all ml-auto xl:ml-0">
@@ -928,7 +934,7 @@ const App = () => {
                           
                           {/* Y-Axis Labels */}
                           <div className="absolute top-12 bottom-12 left-0 w-14 flex flex-col justify-between items-end pr-2 pointer-events-none">
-                            {[maxChartValue, Math.ceil(maxChartValue * 0.75), Math.ceil(maxChartValue * 0.5), Math.ceil(maxChartValue * 0.25), 0].map((val, idx) => (
+                            {[maxChartValue, Math.ceil(maxChartValue * 0.75), Math.ceil(maxChartValue * 0.5), Math.ceil(maxChartValue * 0.25), 0].map((val: number, idx: number) => (
                               <span key={idx} className="text-[10px] text-slate-400 font-bold leading-none translate-y-1/2">{val}</span>
                             ))}
                           </div>
@@ -937,7 +943,7 @@ const App = () => {
                           <div className="flex-1 relative border-l-[3px] border-b-[3px] border-slate-400">
                             {/* Horizontal Grids (Lưới mờ) */}
                             <div className="absolute inset-0 flex flex-col justify-between pointer-events-none">
-                              {[0, 1, 2, 3, 4].map((_, idx) => (
+                              {[0, 1, 2, 3, 4].map((_: number, idx: number) => (
                                 <div key={idx} className="w-full border-t border-slate-500/40 border-dashed"></div>
                               ))}
                             </div>
@@ -986,14 +992,14 @@ const App = () => {
                           </form>
                           
                           <div className="space-y-2">
-                            {adminList.map(email => (
+                            {adminList.map((email: string) => (
                               <div key={email} className="flex justify-between items-center p-3 bg-slate-50 rounded-lg border border-slate-100 transition-all hover:border-slate-300">
                                 <div className="flex items-center space-x-3">
                                   <div className="w-6 h-6 bg-white border rounded-full flex items-center justify-center text-slate-400"><UserIcon size={12} /></div>
                                   <span className="text-sm font-bold text-slate-700">{email}</span>
                                 </div>
                                 {email !== ROOT_ADMIN_EMAIL && (
-                                  <button onClick={() => setAdminList(adminList.filter(e => e !== email))} className="text-slate-300 hover:text-red-500 p-1.5 transition-colors"><Trash2 size={16}/></button>
+                                  <button onClick={() => setAdminList(adminList.filter((e: string) => e !== email))} className="text-slate-300 hover:text-red-500 p-1.5 transition-colors"><Trash2 size={16}/></button>
                                 )}
                                 {email === ROOT_ADMIN_EMAIL && <span className="text-[9px] font-extrabold text-slate-400 uppercase tracking-widest bg-slate-100 px-2 py-1 rounded">Chủ</span>}
                               </div>
