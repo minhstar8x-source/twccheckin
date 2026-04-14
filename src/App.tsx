@@ -248,15 +248,15 @@ const App = () => {
     const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
     
     const idx = {
-      ts: headers.findIndex(h => h.includes("dấu thời gian")),
-      agency: headers.findIndex(h => h.includes("tên đơn vị")),
-      staff: headers.findIndex(h => h.includes("họ và tên cvtv")),
-      sPhone: headers.findIndex(h => h.includes("số điện thoại cvtv")),
+      ts: headers.findIndex(h => h.includes("dấu thời gian") || h.includes("thời gian")),
+      agency: headers.findIndex(h => h.includes("tên đơn vị") || h.includes("đại lý")),
+      staff: headers.findIndex(h => h.includes("họ và tên cvtv") || h.includes("tên cvkd")),
+      sPhone: headers.findIndex(h => h.includes("số điện thoại cvtv") || h.includes("sđt cvkd")),
       cName: headers.findIndex(h => h.includes("tên khách hàng")),
-      cCount: headers.findIndex(h => h.includes("số lượng khách hàng")),
+      cCount: headers.findIndex(h => h.includes("số lượng khách hàng") || h.includes("sl khách")),
       cPhone: headers.findIndex(h => h.includes("số điện thoại kh")),
       age: headers.findIndex(h => h.includes("độ tuổi")),
-      sCount: headers.findIndex(h => h.includes("số lượng cvtv"))
+      sCount: headers.findIndex(h => h.includes("số lượng cvtv") || h.includes("sl cvkd"))
     };
 
     const collectionPath = collection(db, 'artifacts', appId, 'public', 'data', 'gallery_checkins');
@@ -274,8 +274,25 @@ const App = () => {
         const clean = (val: string) => val ? val.replace(/"/g, '').trim() : '';
         
         const timestampRaw = clean(row[idx.ts]);
-        const dateObj = new Date(timestampRaw.replace(/-/g, "/")); // Chống lỗi parse ngày trên một số trình duyệt
-        const dateStr = !isNaN(dateObj.getTime()) ? getLocalDateString(dateObj) : getLocalDateString(new Date());
+        let dateStr = getLocalDateString(new Date()); // Mặc định là hôm nay nếu lỗi
+
+        // --- FIX LỖI NGÀY THÁNG KHI IMPORT ---
+        if (timestampRaw) {
+          // Bắt trực tiếp định dạng YYYY-MM-DD từ text (VD: "2026-04-12 12:44:23")
+          const match = timestampRaw.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+          if (match) {
+            const y = match[1];
+            const m = match[2].padStart(2, '0');
+            const d = match[3].padStart(2, '0');
+            dateStr = `${y}-${m}-${d}`;
+          } else {
+            // Fallback: Thử dùng new Date nếu format khác
+            const dateObj = new Date(timestampRaw.replace(/-/g, "/"));
+            if (!isNaN(dateObj.getTime())) {
+              dateStr = getLocalDateString(dateObj);
+            }
+          }
+        }
 
         const docData = {
           id: Date.now() + i,
@@ -858,41 +875,47 @@ const App = () => {
                         </div>
                       </div>
                       
-                      <div id="admin-chart-container" className="bg-slate-900 rounded-2xl p-6 border border-slate-800 shadow-inner relative overflow-hidden">
-                        <div className="absolute top-10 right-10 flex space-x-4 text-[10px] font-bold z-20 text-center">
+                      <div id="admin-chart-container" className="bg-slate-900 rounded-2xl pt-6 pr-6 pb-2 pl-2 border border-slate-800 shadow-inner relative overflow-hidden">
+                        <div className="absolute top-6 right-6 flex space-x-4 text-[10px] font-bold z-20 text-center bg-slate-800/80 px-3 py-1.5 rounded-lg border border-slate-700/50 backdrop-blur-sm">
                           <div className="flex items-center space-x-1.5 text-orange-400"><div className="w-2.5 h-2.5 bg-orange-500 rounded-sm"></div><span>Khách</span></div>
                           <div className="flex items-center space-x-1.5 text-cyan-400"><div className="w-2.5 h-2.5 bg-cyan-500 rounded-sm"></div><span>CVKD</span></div>
                         </div>
 
-                        <div className="h-80 flex relative pl-20 pb-12 pt-16">
-                          <div className="absolute top-4 left-6 text-cyan-500 font-bold text-[10px] uppercase opacity-50">SỐ LƯỢNG</div>
-                          <div className="absolute top-16 bottom-12 left-2 w-16 flex flex-col justify-between pointer-events-none text-right pr-3">
+                        <div className="h-80 flex relative pl-16 pr-4 pb-12 pt-12">
+                          <div className="absolute top-0 left-4 text-cyan-500 font-bold text-[10px] uppercase opacity-60">Số lượng</div>
+                          
+                          {/* Y-Axis Labels */}
+                          <div className="absolute top-12 bottom-12 left-0 w-14 flex flex-col justify-between items-end pr-2 pointer-events-none">
                             {[maxChartValue, Math.ceil(maxChartValue * 0.75), Math.ceil(maxChartValue * 0.5), Math.ceil(maxChartValue * 0.25), 0].map((val, idx) => (
-                              <div key={idx} className="h-0 flex items-center justify-end">
-                                <span className="text-[10px] text-slate-500 font-bold leading-none">{val}</span>
-                              </div>
-                            ))}
-                          </div>
-                          <div className="absolute top-16 bottom-12 left-20 right-4 flex flex-col justify-between pointer-events-none text-center">
-                            {[0, 1, 2, 3, 4].map((_, idx) => (
-                              <div key={idx} className="w-full border-t border-slate-700/20 border-dashed text-center"></div>
+                              <span key={idx} className="text-[10px] text-slate-400 font-bold leading-none translate-y-1/2">{val}</span>
                             ))}
                           </div>
 
-                          <div className="flex-1 flex items-end justify-around relative z-10 h-full text-center">
-                            {chartData.map((d: any) => (
-                              <div key={d.key} className="flex flex-col items-center flex-1 h-full relative group text-center">
-                                <div className="flex items-end justify-center space-x-1 w-full h-full text-center">
-                                  <div style={{ height: `${d.customers === 0 ? 0 : (d.customers / maxChartValue) * 100}%` }} className="w-full max-w-[28px] bg-gradient-to-t from-orange-600 to-orange-400 rounded-t-sm shadow-[0_0_15px_rgba(234,88,12,0.2)] relative transition-all group-hover:brightness-125">
-                                    <span className="absolute -top-6 left-1/2 -translate-x-1/2 text-[10px] font-bold text-orange-400">{d.customers}</span>
+                          {/* Chart Area with Grid and Axes */}
+                          <div className="flex-1 relative border-l-2 border-b-2 border-slate-500/80 shadow-[inset_0_-1px_0_rgba(255,255,255,0.05),inset_1px_0_0_rgba(255,255,255,0.05)]">
+                            {/* Horizontal Grids */}
+                            <div className="absolute inset-0 flex flex-col justify-between pointer-events-none">
+                              {[0, 1, 2, 3, 4].map((_, idx) => (
+                                <div key={idx} className="w-full border-t border-slate-700/40 border-dashed"></div>
+                              ))}
+                            </div>
+
+                            {/* Bars */}
+                            <div className="absolute inset-0 flex items-end justify-around">
+                              {chartData.map((d: any) => (
+                                <div key={d.key} className="flex flex-col items-center flex-1 h-full relative group justify-end pb-[1px]">
+                                  <div className="flex items-end justify-center space-x-1 sm:space-x-2 w-full h-full relative z-10">
+                                    <div style={{ height: `${d.customers === 0 ? 0 : (d.customers / maxChartValue) * 100}%` }} className="w-full max-w-[28px] bg-gradient-to-t from-orange-600 to-orange-400 rounded-t-sm shadow-[0_0_10px_rgba(234,88,12,0.3)] relative transition-all group-hover:brightness-125 min-h-[2px]">
+                                      {d.customers > 0 && <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[10px] font-bold text-orange-400">{d.customers}</span>}
+                                    </div>
+                                    <div style={{ height: `${d.staff === 0 ? 0 : (d.staff / maxChartValue) * 100}%` }} className="w-full max-w-[28px] bg-gradient-to-t from-cyan-600 to-cyan-400 rounded-t-sm shadow-[0_0_10px_rgba(6,182,212,0.3)] relative transition-all group-hover:brightness-125 min-h-[2px]">
+                                      {d.staff > 0 && <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[10px] font-bold text-cyan-400">{d.staff}</span>}
+                                    </div>
                                   </div>
-                                  <div style={{ height: `${d.staff === 0 ? 0 : (d.staff / maxChartValue) * 100}%` }} className="w-full max-w-[28px] bg-gradient-to-t from-cyan-600 to-cyan-400 rounded-t-sm shadow-[0_0_15px_rgba(6,182,212,0.2)] relative transition-all group-hover:brightness-125">
-                                    <span className="absolute -top-6 left-1/2 -translate-x-1/2 text-[10px] font-bold text-cyan-400">{d.staff}</span>
-                                  </div>
+                                  <span className="absolute -bottom-8 text-[9px] font-bold text-slate-400 text-center w-full leading-tight whitespace-pre-wrap px-1">{d.label}</span>
                                 </div>
-                                <span className="absolute -bottom-10 text-[9px] font-bold text-slate-500 text-center w-full leading-tight whitespace-pre-wrap px-1">{d.label}</span>
-                              </div>
-                            ))}
+                              ))}
+                            </div>
                           </div>
                         </div>
                       </div>
