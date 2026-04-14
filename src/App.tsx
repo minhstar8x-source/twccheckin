@@ -17,7 +17,9 @@ import {
   History,
   FileSpreadsheet,
   Upload,
-  AlertTriangle
+  AlertTriangle,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { 
@@ -77,7 +79,8 @@ const App = () => {
   const [adminEmail, setAdminEmail] = useState('');
   const [adminError, setAdminError] = useState('');
   const [adminSubTab, setAdminSubTab] = useState('list'); 
-  const [chartView, setChartView] = useState<'day' | 'week' | 'month'>('week'); 
+  const [chartView, setChartView] = useState<'day' | 'week' | 'month'>('day'); 
+  const [chartFocusDate, setChartFocusDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [filterDate, setFilterDate] = useState(''); 
   const [filterType, setFilterType] = useState('all'); 
   
@@ -428,47 +431,53 @@ const App = () => {
 
   const chartData = useMemo(() => {
     const dataMap: any = {};
-    const now = new Date();
-    now.setHours(0,0,0,0);
+    const baseDate = new Date(chartFocusDate);
+    baseDate.setHours(0,0,0,0);
 
     if (chartView === 'day') {
-      for (let i = 6; i >= 0; i--) {
-        const d = new Date(now);
-        d.setDate(now.getDate() - i);
+      // Tìm ngày Thứ Hai của tuần chứa ngày được chọn
+      const dayNum = baseDate.getDay();
+      const diffToMonday = dayNum === 0 ? -6 : 1 - dayNum;
+      const monday = new Date(baseDate);
+      monday.setDate(baseDate.getDate() + diffToMonday);
+
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(monday);
+        d.setDate(monday.getDate() + i);
         const dateStr = d.toISOString().split('T')[0];
         dataMap[dateStr] = { 
           key: dateStr, 
           label: `${d.getDate()}/${d.getMonth()+1}`, 
-          customers: 0, staff: 0, sortIndex: 7-i 
+          customers: 0, staff: 0, sortIndex: i 
         };
       }
     } else if (chartView === 'week') {
-      const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
-      const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-      let dayIdx = firstDay.getDay();
-      let diff = firstDay.getDate() - dayIdx + (dayIdx === 0 ? -6 : 1);
-      let currentMonday = new Date(firstDay.getFullYear(), firstDay.getMonth(), diff);
+      // Hiển thị 4 tuần của tháng chứa ngày được chọn
+      const monthStart = new Date(baseDate.getFullYear(), baseDate.getMonth(), 1);
+      const firstMonday = new Date(monthStart);
+      const startDay = monthStart.getDay();
+      const diffToFirstMonday = startDay === 0 ? -6 : 1 - startDay;
+      firstMonday.setDate(monthStart.getDate() + diffToFirstMonday);
 
-      let weekIdx = 0;
-      while (currentMonday <= lastDay) {
-        const start = new Date(currentMonday);
-        const end = new Date(currentMonday);
-        end.setDate(end.getDate() + 6);
-        const key = `week-${weekIdx}`;
+      for (let i = 0; i < 5; i++) {
+        const start = new Date(firstMonday);
+        start.setDate(firstMonday.getDate() + (i * 7));
+        const end = new Date(start);
+        end.setDate(start.getDate() + 6);
+        const key = `week-${i}`;
         dataMap[key] = {
-          key, label: `Từ ${start.getDate()}/${start.getMonth()+1}\nđến ${end.getDate()}/${end.getMonth()+1}`,
-          customers: 0, staff: 0, sortIndex: weekIdx, startDate: new Date(start), endDate: new Date(end)
+          key, label: `Từ ${start.getDate()}/${start.getMonth()+1}`,
+          customers: 0, staff: 0, sortIndex: i, startDate: new Date(start), endDate: new Date(end)
         };
-        currentMonday.setDate(currentMonday.getDate() + 7);
-        weekIdx++;
       }
     } else {
-      for (let i = 5; i >= 0; i--) {
-        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      // Hiển thị 6 tháng quanh ngày được chọn (3 tháng trước, 2 tháng sau)
+      for (let i = -3; i <= 2; i++) {
+        const d = new Date(baseDate.getFullYear(), baseDate.getMonth() + i, 1);
         const key = `${d.getFullYear()}-${d.getMonth() + 1}`;
         dataMap[key] = { 
           key, label: `T${d.getMonth() + 1}/${d.getFullYear()}`, 
-          customers: 0, staff: 0, sortIndex: 6-i 
+          customers: 0, staff: 0, sortIndex: i + 3 
         };
       }
     }
@@ -484,7 +493,7 @@ const App = () => {
         }
       } else if (chartView === 'week') {
         Object.values(dataMap).forEach((bucket: any) => {
-          if (itemDate >= bucket.startDate && itemDate <= bucket.endDate) {
+          if (bucket.startDate && itemDate >= bucket.startDate && itemDate <= bucket.endDate) {
             bucket.customers += (item.customerCount || 0);
             bucket.staff += (item.staffCount || 0);
           }
@@ -499,7 +508,7 @@ const App = () => {
     });
 
     return Object.values(dataMap).sort((a: any, b: any) => a.sortIndex - b.sortIndex);
-  }, [checkIns, chartView]);
+  }, [checkIns, chartView, chartFocusDate]);
 
   const baseMax = Math.max(5, ...chartData.map((d: any) => Math.max(d.customers, d.staff)));
   const maxChartValue = Math.ceil(baseMax * 1.5);
@@ -798,20 +807,52 @@ const App = () => {
                   {/* THỐNG KÊ */}
                   {adminSubTab === 'chart' && (
                     <div className="bg-white p-6 rounded-xl shadow-sm border animate-in fade-in">
-                      <div className="flex flex-col sm:flex-row justify-between items-center mb-8 gap-4">
+                      <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center mb-8 gap-4">
                         <div className="flex items-center space-x-3">
                           <BarChart3 size={24} className="text-[#ea580c]" />
                           <h3 className="font-bold text-lg text-slate-800">Thống kê lưu lượng khách</h3>
                         </div>
-                        <div className="flex space-x-2">
-                          <button onClick={exportChartImage} disabled={isExporting} className="bg-slate-800 text-white px-4 py-2 rounded-lg text-xs font-bold flex items-center shadow hover:bg-slate-900 transition-all">
+                        
+                        <div className="flex flex-wrap items-center gap-3 w-full xl:w-auto">
+                          {/* Bộ chọn ngày mốc để xem biểu đồ */}
+                          <div className="flex items-center space-x-2 bg-slate-100 p-1.5 rounded-lg border">
+                            <button 
+                              onClick={() => {
+                                const d = new Date(chartFocusDate);
+                                d.setDate(d.getDate() - 7);
+                                setChartFocusDate(d.toISOString().split('T')[0]);
+                              }}
+                              className="p-1 hover:bg-white rounded shadow-sm transition-all"
+                            >
+                              <ChevronLeft size={16} />
+                            </button>
+                            <input 
+                              type="date" 
+                              value={chartFocusDate} 
+                              onChange={(e) => setChartFocusDate(e.target.value)}
+                              className="bg-transparent text-xs font-bold outline-none border-none focus:ring-0 p-0 w-28 text-center"
+                            />
+                            <button 
+                              onClick={() => {
+                                const d = new Date(chartFocusDate);
+                                d.setDate(d.getDate() + 7);
+                                setChartFocusDate(d.toISOString().split('T')[0]);
+                              }}
+                              className="p-1 hover:bg-white rounded shadow-sm transition-all"
+                            >
+                              <ChevronRight size={16} />
+                            </button>
+                          </div>
+
+                          <div className="flex bg-slate-100 p-1 rounded-lg">
+                            <button onClick={() => setChartView('day')} className={`px-4 py-1.5 text-xs font-bold rounded-md ${chartView === 'day' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Tuần</button>
+                            <button onClick={() => setChartView('week')} className={`px-4 py-1.5 text-xs font-bold rounded-md ${chartView === 'week' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Tháng</button>
+                            <button onClick={() => setChartView('month')} className={`px-4 py-1.5 text-xs font-bold rounded-md ${chartView === 'month' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Năm</button>
+                          </div>
+
+                          <button onClick={exportChartImage} disabled={isExporting} className="bg-slate-800 text-white px-4 py-2 rounded-lg text-xs font-bold flex items-center shadow hover:bg-slate-900 transition-all ml-auto xl:ml-0">
                             {isExporting ? <Loader2 size={14} className="animate-spin mr-1" /> : <Camera size={14} className="mr-1"/>} {isExporting ? 'Đang lưu...' : 'Lưu ảnh'}
                           </button>
-                          <div className="flex bg-slate-100 p-1 rounded-lg">
-                            <button onClick={() => setChartView('day')} className={`px-4 py-1.5 text-xs font-bold rounded-md ${chartView === 'day' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Ngày</button>
-                            <button onClick={() => setChartView('week')} className={`px-4 py-1.5 text-xs font-bold rounded-md ${chartView === 'week' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Tuần</button>
-                            <button onClick={() => setChartView('month')} className={`px-4 py-1.5 text-xs font-bold rounded-md ${chartView === 'month' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Tháng</button>
-                          </div>
                         </div>
                       </div>
                       
