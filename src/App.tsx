@@ -378,15 +378,14 @@ const App = () => {
         batchCount++;
         validCount++;
 
-        // GIẢM CHUNK SIZE XUỐNG 100 VÀ BẮT BUỘC DELAY ĐỂ KHÔNG TREO UI HOẶC BỊ RATE LIMIT
+        // GIẢI PHÁP CHỐNG TREO: Tăng delay lên 100ms
         if (batchCount >= 100) {
           await batch.commit();
           batch = writeBatch(db);
           batchCount = 0;
           setImportProgress(Math.round(((i + 1) / total) * 100));
-          await new Promise(r => setTimeout(r, 30)); // Delay 30ms cho Firebase kịp xử lý
+          await new Promise(r => setTimeout(r, 100)); // Nhường bộ nhớ cho trình duyệt xử lý
         } else if (i % 25 === 0) {
-          // Chỉ update UI hiển thị, không gửi lên server
           setImportProgress(Math.round(((i + 1) / total) * 100));
           await new Promise(r => setTimeout(r, 5));
         }
@@ -409,14 +408,13 @@ const App = () => {
     }
   };
 
-  // NÂNG CẤP XÓA SẠCH DỮ LIỆU: Xóa theo Batch 100 để không treo máy
+  // NÂNG CẤP XÓA SẠCH DỮ LIỆU CHỐNG TREO
   const handleClearAllData = async () => {
     if (!window.confirm("CẢNH BÁO NGUY HIỂM: Hành động này sẽ xóa vĩnh viễn TOÀN BỘ dữ liệu check-in trong hệ thống. Bạn có chắc chắn muốn thực hiện?")) return;
     
     setImportLoading(true);
     setImportProgress(0);
     
-    // Tạo bản sao danh sách để xóa, tránh xung đột re-render
     const itemsToDelete = [...checkIns];
     const total = itemsToDelete.length;
 
@@ -427,7 +425,7 @@ const App = () => {
     }
 
     try {
-      const chunkSize = 100; // Giảm chunk xuống 100 để an toàn
+      const chunkSize = 100;
       for (let i = 0; i < total; i += chunkSize) {
         const chunk = itemsToDelete.slice(i, i + chunkSize);
         const batch = writeBatch(db);
@@ -439,7 +437,7 @@ const App = () => {
 
         await batch.commit();
         setImportProgress(Math.round(((i + chunk.length) / total) * 100));
-        await new Promise(r => setTimeout(r, 30)); // Nhường luồng cho UI cập nhật mượt mà
+        await new Promise(r => setTimeout(r, 100)); // Nghỉ 100ms chống đơ biểu đồ
       }
 
       setTimeout(() => {
@@ -524,7 +522,9 @@ const App = () => {
   };
 
   // --- CHART LOGIC ---
+  // BLOCK TÍNH TOÁN BẢNG: Sẽ chặn việc tính toán khi đang load Import/Delete để chống đơ máy
   const filteredCheckIns = useMemo(() => {
+    if (importLoading) return []; // <-- Chìa khóa chống đơ máy 
     return checkIns.filter((item: any) => {
       const matchDate = filterDate ? item.date === filterDate : true;
       let matchType = true;
@@ -532,16 +532,17 @@ const App = () => {
       if (filterType === 'staff_only') matchType = !item.hasCustomer;
       return matchDate && matchType;
     });
-  }, [checkIns, filterDate, filterType]);
+  }, [checkIns, filterDate, filterType, importLoading]);
 
-  // Logic Chart mới hỗ trợ hiển thị theo Đối tượng và Độ tuổi
+  // BLOCK TÍNH TOÁN BIỂU ĐỒ: Ngừng hoạt động 100% khi đang Load dữ liệu
   const chartData = useMemo<any[]>(() => {
+    if (importLoading) return []; // <-- Chìa khóa chống đơ máy
+
     const dataMap: any = {};
     const [y, m, d] = chartFocusDate.split('-').map(Number);
     const baseDate = new Date(y, m - 1, d);
     baseDate.setHours(0,0,0,0);
 
-    // 1. Khởi tạo các khung thời gian (x-axis)
     if (chartView === 'day') {
       const dayNum = baseDate.getDay();
       const diffToMonday = dayNum === 0 ? -6 : 1 - dayNum;
@@ -577,13 +578,11 @@ const App = () => {
       }
     }
 
-    // Thiết lập giá trị 0 mặc định cho từng Bucket tùy theo Metric
     Object.values(dataMap).forEach((bucket: any) => {
-      bucket.customers = 0; bucket.staff = 0; // Mặc định cho Role
-      AGE_GROUPS.forEach(ag => bucket[ag] = 0); // Mặc định cho Age
+      bucket.customers = 0; bucket.staff = 0;
+      AGE_GROUPS.forEach(ag => bucket[ag] = 0);
     });
 
-    // 2. Phân loại dữ liệu vào Bucket
     checkIns.forEach((item: any) => {
       let targetBucket: any = null;
 
@@ -600,11 +599,9 @@ const App = () => {
       }
 
       if (targetBucket) {
-        // Phân loại Đối tượng (Role)
         targetBucket.customers += (item.customerCount || 0);
         targetBucket.staff += (item.staffCount || 0);
         
-        // Phân loại Độ tuổi (Age) - Chỉ tính khách hàng
         if (item.hasCustomer && item.customerCount > 0) {
           const ageGroup = normalizeAge(item.customerAge);
           targetBucket[ageGroup] += (item.customerCount || 0);
@@ -613,16 +610,14 @@ const App = () => {
     });
 
     return Object.values(dataMap).sort((a: any, b: any) => a.sortIndex - b.sortIndex);
-  }, [checkIns, chartView, chartFocusDate, chartMetric]);
+  }, [checkIns, chartView, chartFocusDate, chartMetric, importLoading]);
 
-  // Tính toán trục Y linh hoạt
   const maxChartValue = useMemo(() => {
     if (chartData.length === 0) return 5;
     if (chartMetric === 'role') {
       const baseMax = Math.max(5, ...chartData.map(d => Math.max(d.customers, d.staff)));
       return Math.ceil(baseMax * 1.4); 
     } else {
-      // Đối với stacked bar, lấy tổng của cột cao nhất
       const baseMax = Math.max(5, ...chartData.map(d => AGE_GROUPS.reduce((sum, ag) => sum + d[ag], 0)));
       return Math.ceil(baseMax * 1.2); 
     }
@@ -701,7 +696,7 @@ const App = () => {
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/70 backdrop-blur-md">
           <div className="bg-white p-8 rounded-3xl shadow-2xl w-80 text-center animate-in zoom-in-95">
              <div className="w-16 h-16 border-4 border-orange-100 border-t-[#ea580c] rounded-full animate-spin mx-auto mb-4"></div>
-             <h3 className="font-bold text-slate-800 mb-1">Đang xử lý dữ liệu</h3>
+             <h3 className="font-bold text-slate-800 mb-1">Đang đồng bộ dữ liệu</h3>
              <p className="text-xs text-slate-500 mb-4">Vui lòng không đóng trình duyệt</p>
              <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden mb-2">
                 <div className="bg-[#ea580c] h-full transition-all duration-300" style={{ width: `${importProgress}%` }}></div>
@@ -874,7 +869,9 @@ const App = () => {
                             </tr>
                           </thead>
                           <tbody>
-                            {filteredCheckIns.length === 0 ? (
+                            {importLoading ? (
+                              <tr><td colSpan={7} className="p-12 text-center text-slate-400 font-semibold animate-pulse">Hệ thống đang đồng bộ. Bảng tạm ẩn để chống đơ trình duyệt...</td></tr>
+                            ) : filteredCheckIns.length === 0 ? (
                               <tr><td colSpan={7} className="p-12 text-center text-slate-400 italic">Không tìm thấy dữ liệu</td></tr>
                             ) : (
                               filteredCheckIns.map((item: any) => (
@@ -1033,7 +1030,11 @@ const App = () => {
 
                             {/* BARS: Hiển thị tùy loại */}
                             <div className="absolute inset-0 flex items-end justify-around">
-                              {chartData.map((d: any) => {
+                              {importLoading ? (
+                                <div className="absolute inset-0 flex items-center justify-center text-slate-400 text-xs uppercase tracking-widest animate-pulse font-bold">
+                                  Hệ thống đang tạm ngừng vẽ biểu đồ để tập trung đẩy dữ liệu...
+                                </div>
+                              ) : chartData.map((d: any) => {
                                 const stackedTotal = AGE_GROUPS.reduce((sum, ag) => sum + d[ag], 0);
 
                                 return (
