@@ -55,7 +55,17 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 const appId = typeof w.__app_id !== 'undefined' ? w.__app_id : 'default-app-id';
 
-// Helper
+// Helper: HÀM ÉP TIMEOUT CHỐNG TREO QUAY QUAY
+const commitBatchWithTimeout = (batch: any, timeoutMs = 15000) => {
+  return Promise.race([
+    batch.commit(),
+    new Promise((_, reject) => 
+      setTimeout(() => reject(new Error("Mạng chậm hoặc kẹt máy chủ, đã tự động ngắt kết nối để tránh treo trình duyệt!")), timeoutMs)
+    )
+  ]);
+};
+
+// Helper Dates
 const getLocalDateString = (date: Date) => {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -171,7 +181,9 @@ const App = () => {
 
   // FIRESTORE
   useEffect(() => {
+    // Ngắt kết nối lắng nghe dữ liệu khi đang Import/Xóa để RAM không bị đầy
     if (!user || !firebaseConfig.apiKey || importLoading) return; 
+    
     const collectionPath = collection(db, 'artifacts', appId, 'public', 'data', 'gallery_checkins');
     const unsubscribe = onSnapshot(collectionPath, (snapshot) => {
       const data = snapshot.docs.map((doc: any) => ({ firebaseId: doc.id, ...doc.data() }));
@@ -217,13 +229,65 @@ const App = () => {
     } catch(err: any) { alert("Lỗi: " + err.message); }
   };
 
-  // EXCEL IMPORT - TỐI ƯU HÓA RATE LIMIT (CHỐNG TREO)
+  // ======================================================================
+  // CHỨC NĂNG XÓA DỮ LIỆU ĐÃ NÂNG CẤP (XỬ LÝ DỨT ĐIỂM LỖI QUAY QUAY)
+  // ======================================================================
+  const handleClearAllData = async () => {
+    if (!window.confirm("CẢNH BÁO MẠNH: Xóa vĩnh viễn TOÀN BỘ dữ liệu? Hành động này không thể hoàn tác.")) return;
+    const itemsToDelete = [...checkIns];
+    if (itemsToDelete.length === 0) return;
+
+    setImportLoading(true);
+    setImportProgress(0);
+    setImportStatusText("Đang bắt đầu dọn dẹp...");
+
+    try {
+      // BÍ QUYẾT: Giảm gói xuống 100 thay vì 400. Mạng duyệt rất nhanh, không sợ nghẽn.
+      const chunkSize = 100; 
+      
+      for (let i = 0; i < itemsToDelete.length; i += chunkSize) {
+        const batch = writeBatch(db);
+        const chunk = itemsToDelete.slice(i, i + chunkSize);
+        
+        chunk.forEach(item => {
+          if (item.firebaseId) {
+            batch.delete(doc(db, 'artifacts', appId, 'public', 'data', 'gallery_checkins', item.firebaseId));
+          }
+        });
+
+        // Sử dụng hàm ép Timeout tự viết để chống treo im lặng
+        await commitBatchWithTimeout(batch);
+        
+        const progress = Math.round(((i + chunk.length) / itemsToDelete.length) * 100);
+        setImportProgress(progress > 100 ? 100 : progress);
+        setImportStatusText(`Đã dọn dẹp: ${i + chunk.length} / ${itemsToDelete.length} dòng...`);
+        
+        // Thời gian nghỉ ngắn gọn hơn (0.5s), vừa đủ để máy chủ tiêu hóa
+        await new Promise(r => setTimeout(r, 500));
+      }
+
+      setImportProgress(100);
+      setCheckIns([]); // Xóa sạch rác trong RAM trước khi tắt Loading
+      
+      setTimeout(() => { 
+        setImportLoading(false); 
+        alert("Tuyệt vời! Đã dọn sạch toàn bộ hệ thống dữ liệu thành công."); 
+      }, 500);
+      
+    } catch (err: any) { 
+      alert("Lỗi quá trình xóa: " + err.message); 
+      setImportLoading(false); 
+    }
+  };
+
+  // ======================================================================
+  // CHỨC NĂNG NHẬP DỮ LIỆU ĐÃ NÂNG CẤP (XỬ LÝ DỨT ĐIỂM LỖI QUAY QUAY)
+  // ======================================================================
   const processCSV = async (csvText: string) => {
     setImportLoading(true);
     setImportProgress(0);
-    setImportStatusText("Đang phân tích tệp...");
+    setImportStatusText("Đang phân tích tệp dữ liệu...");
     
-    // Sử dụng thuật toán chuẩn xử lý mọi loại CSV
     const rows = parseCSVFull(csvText);
     if (rows.length < 2) { setImportLoading(false); return; }
 
@@ -246,9 +310,8 @@ const App = () => {
     let validCount = 0;
 
     try {
-      // BÍ QUYẾT: Dồn 400 dòng vào 1 cục (Firebase cho phép tối đa 500)
-      // Giúp số lần gọi API giảm từ hàng trăm xuống chỉ còn khoảng ~11 lần.
-      const chunkSize = 400; 
+      // Chia nhỏ thành các gói an toàn 100 dòng
+      const chunkSize = 100; 
       
       for (let i = 0; i < total; i += chunkSize) {
         const batch = writeBatch(db);
@@ -283,53 +346,28 @@ const App = () => {
           validCount++;
         });
 
-        // Gửi 400 dòng lên máy chủ cùng lúc
-        await batch.commit();
+        // Sử dụng Timeout bảo vệ vòng lặp
+        await commitBatchWithTimeout(batch);
         
         const progress = Math.round(((i + currentChunk.length) / total) * 100);
         setImportProgress(progress > 100 ? 100 : progress);
-        setImportStatusText(`Đã nhập: ${validCount} / ${total} dòng...`);
+        setImportStatusText(`Đã nạp: ${validCount} / ${total} dòng...`);
         
-        // BÍ QUYẾT: Bắt buộc nghỉ ngơi 2 giây (2000ms) để Firebase không hiểu nhầm là bị tấn công DDoS
-        await new Promise(r => setTimeout(r, 2000));
+        // Nghỉ ngơi 0.5 giây
+        await new Promise(r => setTimeout(r, 500));
       }
 
       setImportProgress(100);
-      setTimeout(() => { setImportLoading(false); alert(`Thành công tuyệt đối! Đã nhập ${validCount} dòng dữ liệu.`); setAdminSubTab('list'); }, 500);
-    } catch (err: any) { alert("Lỗi hệ thống: " + err.message); setImportLoading(false); }
-  };
-
-  // CLEAR DATA - CŨNG ÁP DỤNG GÓI 400 & NGHỈ 2 GIÂY
-  const handleClearAllData = async () => {
-    if (!window.confirm("CẢNH BÁO: Xóa vĩnh viễn TOÀN BỘ dữ liệu. Bạn chắc chắn chứ?")) return;
-    const itemsToDelete = [...checkIns];
-    if (itemsToDelete.length === 0) return;
-
-    setImportLoading(true);
-    setImportProgress(0);
-    setImportStatusText("Đang chuẩn bị dọn dẹp...");
-
-    try {
-      const chunkSize = 400; // Tối đa gói 400
-      for (let i = 0; i < itemsToDelete.length; i += chunkSize) {
-        const batch = writeBatch(db);
-        const chunk = itemsToDelete.slice(i, i + chunkSize);
-        
-        chunk.forEach(item => {
-          batch.delete(doc(db, 'artifacts', appId, 'public', 'data', 'gallery_checkins', item.firebaseId || item.id));
-        });
-
-        await batch.commit();
-        const progress = Math.round(((i + chunk.length) / itemsToDelete.length) * 100);
-        setImportProgress(progress > 100 ? 100 : progress);
-        setImportStatusText(`Đã dọn dẹp: ${i + chunk.length} / ${itemsToDelete.length} dòng...`);
-        
-        await new Promise(r => setTimeout(r, 2000));
-      }
-
-      setImportProgress(100);
-      setTimeout(() => { setImportLoading(false); alert("Đã dọn sạch toàn bộ dữ liệu."); }, 500);
-    } catch (err: any) { alert("Lỗi: " + err.message); setImportLoading(false); }
+      setTimeout(() => { 
+        setImportLoading(false); 
+        alert(`Nhập thành công hoàn toàn! Đã nạp ${validCount} dòng dữ liệu.`); 
+        setAdminSubTab('list'); 
+      }, 500);
+      
+    } catch (err: any) { 
+      alert("Lỗi quá trình nhập: " + err.message); 
+      setImportLoading(false); 
+    }
   };
 
   const handleManualSubmit = async (e: React.FormEvent) => {
@@ -441,7 +479,7 @@ const App = () => {
                <Loader2 className="text-[#ea580c] animate-spin absolute w-8 h-8 opacity-50" />
              </div>
              <h3 className="font-extrabold text-2xl text-slate-800 mb-2">Đang xử lý...</h3>
-             <p className="text-sm text-slate-500 mb-5">Hệ thống đang nạp từng cục 400 dòng để tránh quá tải.</p>
+             <p className="text-sm text-slate-500 mb-5">Hệ thống đang chạy gói nhỏ (100 dòng) để đảm bảo mạng không nghẽn.</p>
              <div className="w-full bg-slate-100 h-4 rounded-full overflow-hidden mb-4 shadow-inner">
                 <div className="bg-gradient-to-r from-orange-500 to-orange-400 h-full transition-all duration-300" style={{ width: `${importProgress}%` }}></div>
              </div>
