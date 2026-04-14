@@ -17,7 +17,9 @@ import {
   Upload,
   AlertTriangle,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Camera,
+  Loader2
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { 
@@ -78,18 +80,31 @@ const AGE_COLORS: Record<string, string> = {
   '< 25': 'bg-rose-400', '25-35': 'bg-amber-400', '36-45': 'bg-emerald-400', '46-55': 'bg-blue-400', '> 55': 'bg-violet-400', 'Khác': 'bg-slate-400'
 };
 
-const parseCSVRow = (str: string) => {
-  const result = [];
-  let current = '';
+// Thuật toán Đọc CSV siêu cấp: Chống lỗi khi khách hàng bấm Enter xuống dòng trong ô Excel
+const parseCSVFull = (text: string) => {
+  const rows: string[][] = [];
+  let currentRow: string[] = [];
+  let currentCell = '';
   let inQuotes = false;
-  for (let i = 0; i < str.length; i++) {
-    const char = str[i];
-    if (char === '"') inQuotes = !inQuotes;
-    else if (char === ',' && !inQuotes) { result.push(current.trim()); current = ''; }
-    else current += char;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (char === '"') {
+      if (inQuotes && text[i+1] === '"') { currentCell += '"'; i++; }
+      else { inQuotes = !inQuotes; }
+    } else if (char === ',' && !inQuotes) {
+      currentRow.push(currentCell.trim()); currentCell = '';
+    } else if (char === '\n' && !inQuotes) {
+      currentRow.push(currentCell.trim()); rows.push(currentRow); currentRow = []; currentCell = '';
+    } else if (char === '\r' && !inQuotes) {
+      // bỏ qua ký tự \r
+    } else {
+      currentCell += char;
+    }
   }
-  result.push(current.trim());
-  return result;
+  if (currentRow.length > 0 || currentCell) {
+    currentRow.push(currentCell.trim()); rows.push(currentRow);
+  }
+  return rows.filter(r => r.join('').trim() !== '');
 };
 
 const App = () => {
@@ -174,7 +189,6 @@ const App = () => {
   const initialFormState = { agencyName: '', staffName: '', staffPhone: '', staffCount: 1, customerName: '', customerPhone: '', customerCount: 1, customerAge: '' };
   const [formData, setFormData] = useState(initialFormState);
 
-  // FIX: Định nghĩa isFormValid để tránh ReferenceError
   const isFormValid = useMemo(() => {
     const staffOk = formData.agencyName.trim() !== '' && formData.staffName.trim() !== '' && formData.staffPhone.length >= 4;
     if (!hasCustomer) return staffOk;
@@ -204,18 +218,19 @@ const App = () => {
     } catch(err: any) { alert("Lỗi: " + err.message); }
   };
 
-  // EXCEL IMPORT
+  // EXCEL IMPORT - TỐI ƯU HÓA RATE LIMIT (CHỐNG TREO)
   const processCSV = async (csvText: string) => {
     setImportLoading(true);
     setImportProgress(0);
     setImportStatusText("Đang phân tích tệp...");
     
-    const lines = csvText.split(/\r?\n/).filter(l => l.trim() !== "");
-    if (lines.length < 2) { setImportLoading(false); return; }
+    // Sử dụng thuật toán chuẩn xử lý mọi loại CSV
+    const rows = parseCSVFull(csvText);
+    if (rows.length < 2) { setImportLoading(false); return; }
 
-    const headers = parseCSVRow(lines[0]).map(h => h.toLowerCase());
+    const headers = rows[0].map(h => h.toLowerCase());
     const idx = {
-      ts: headers.findIndex(h => h.includes("dấu thời gian")),
+      ts: headers.findIndex(h => h.includes("dấu thời gian") || h.includes("thời gian")),
       date: headers.findIndex(h => h.includes("ngày")),
       agency: headers.findIndex(h => h.includes("đơn vị") || h.includes("đại lý")),
       staff: headers.findIndex(h => h.includes("cvtv") || h.includes("cvkd")),
@@ -227,18 +242,20 @@ const App = () => {
       sCount: headers.findIndex(h => h.includes("số lượng cv"))
     };
 
-    const dataRows = lines.slice(1);
+    const dataRows = rows.slice(1);
     const total = dataRows.length;
     let validCount = 0;
 
     try {
-      const chunkSize = 25;
+      // BÍ QUYẾT: Dồn 400 dòng vào 1 cục (Firebase cho phép tối đa 500)
+      // Giúp số lần gọi API giảm từ hàng trăm xuống chỉ còn khoảng ~11 lần.
+      const chunkSize = 400; 
+      
       for (let i = 0; i < total; i += chunkSize) {
         const batch = writeBatch(db);
         const currentChunk = dataRows.slice(i, i + chunkSize);
         
-        currentChunk.forEach((line, subIdx) => {
-          const row = parseCSVRow(line);
+        currentChunk.forEach((row, subIdx) => {
           if (row.length < 3) return;
 
           const getStr = (index: number) => (index !== -1 && row[index]) ? String(row[index]).trim() : '';
@@ -267,48 +284,52 @@ const App = () => {
           validCount++;
         });
 
+        // Gửi 400 dòng lên máy chủ cùng lúc
         await batch.commit();
+        
         const progress = Math.round(((i + currentChunk.length) / total) * 100);
-        setImportProgress(progress);
+        setImportProgress(progress > 100 ? 100 : progress);
         setImportStatusText(`Đã nhập: ${validCount} / ${total} dòng...`);
         
-        await new Promise(r => setTimeout(r, 150));
+        // BÍ QUYẾT: Bắt buộc nghỉ ngơi 2 giây (2000ms) để Firebase không hiểu nhầm là bị tấn công DDoS
+        await new Promise(r => setTimeout(r, 2000));
       }
 
       setImportProgress(100);
-      setTimeout(() => { setImportLoading(false); alert(`Thành công! Đã nhập ${validCount} dòng.`); setAdminSubTab('list'); }, 500);
-    } catch (err: any) { alert("Lỗi: " + err.message); setImportLoading(false); }
+      setTimeout(() => { setImportLoading(false); alert(`Thành công tuyệt đối! Đã nhập ${validCount} dòng dữ liệu.`); setAdminSubTab('list'); }, 500);
+    } catch (err: any) { alert("Lỗi hệ thống: " + err.message); setImportLoading(false); }
   };
 
+  // CLEAR DATA - CŨNG ÁP DỤNG GÓI 400 & NGHỈ 2 GIÂY
   const handleClearAllData = async () => {
-    if (!window.confirm("Xóa vĩnh viễn TOÀN BỘ dữ liệu?")) return;
+    if (!window.confirm("CẢNH BÁO: Xóa vĩnh viễn TOÀN BỘ dữ liệu. Bạn chắc chắn chứ?")) return;
     const itemsToDelete = [...checkIns];
     if (itemsToDelete.length === 0) return;
 
     setImportLoading(true);
     setImportProgress(0);
-    setImportStatusText("Đang chuẩn bị xóa...");
+    setImportStatusText("Đang chuẩn bị dọn dẹp...");
 
     try {
-      const chunkSize = 25;
+      const chunkSize = 400; // Tối đa gói 400
       for (let i = 0; i < itemsToDelete.length; i += chunkSize) {
         const batch = writeBatch(db);
         const chunk = itemsToDelete.slice(i, i + chunkSize);
         
         chunk.forEach(item => {
-          batch.delete(doc(db, 'artifacts', appId, 'public', 'data', 'gallery_checkins', item.firebaseId));
+          batch.delete(doc(db, 'artifacts', appId, 'public', 'data', 'gallery_checkins', item.firebaseId || item.id));
         });
 
         await batch.commit();
         const progress = Math.round(((i + chunk.length) / itemsToDelete.length) * 100);
-        setImportProgress(progress);
-        setImportStatusText(`Đã xóa: ${i + chunk.length} / ${itemsToDelete.length} dòng...`);
+        setImportProgress(progress > 100 ? 100 : progress);
+        setImportStatusText(`Đã dọn dẹp: ${i + chunk.length} / ${itemsToDelete.length} dòng...`);
         
-        await new Promise(r => setTimeout(r, 150));
+        await new Promise(r => setTimeout(r, 2000));
       }
 
       setImportProgress(100);
-      setTimeout(() => { setImportLoading(false); alert("Đã xóa sạch dữ liệu."); }, 500);
+      setTimeout(() => { setImportLoading(false); alert("Đã dọn sạch toàn bộ dữ liệu."); }, 500);
     } catch (err: any) { alert("Lỗi: " + err.message); setImportLoading(false); }
   };
 
@@ -332,6 +353,8 @@ const App = () => {
       processCSV(content);
     };
     reader.readAsText(file);
+    // Reset file input
+    e.target.value = '';
   };
 
   // CHART & FILTER
@@ -415,10 +438,13 @@ const App = () => {
       {importLoading && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/80 backdrop-blur-xl animate-in fade-in">
           <div className="bg-white p-10 rounded-[40px] shadow-2xl w-96 text-center">
-             <div className="w-20 h-20 border-8 border-orange-50 border-t-[#ea580c] rounded-full animate-spin mx-auto mb-6"></div>
+             <div className="w-20 h-20 border-8 border-orange-50 border-t-[#ea580c] rounded-full animate-spin mx-auto mb-6 flex items-center justify-center">
+               <Loader2 className="text-[#ea580c] animate-spin absolute w-8 h-8 opacity-50" />
+             </div>
              <h3 className="font-extrabold text-2xl text-slate-800 mb-2">Đang xử lý...</h3>
-             <div className="w-full bg-slate-100 h-4 rounded-full overflow-hidden mb-4">
-                <div className="bg-[#ea580c] h-full transition-all duration-300" style={{ width: `${importProgress}%` }}></div>
+             <p className="text-sm text-slate-500 mb-5">Hệ thống đang nạp từng cục 400 dòng để tránh quá tải.</p>
+             <div className="w-full bg-slate-100 h-4 rounded-full overflow-hidden mb-4 shadow-inner">
+                <div className="bg-gradient-to-r from-orange-500 to-orange-400 h-full transition-all duration-300" style={{ width: `${importProgress}%` }}></div>
              </div>
              <div className="flex justify-between items-center mb-2">
                 <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">{importStatusText}</span>
@@ -451,7 +477,7 @@ const App = () => {
                   {!importLoading ? (
                     <>
                     {adminSubTab === 'list' && (
-                      <div className="bg-white rounded-xl shadow-sm border overflow-hidden animate-in fade-in"><div className="flex flex-col lg:flex-row justify-between p-4 border-b bg-slate-50 gap-4"><h3 className="font-bold flex items-center text-slate-800">Lịch sử Đăng ký <span className="ml-2 bg-orange-100 text-orange-800 px-3 py-1 rounded-full text-xs font-bold">{filteredCheckIns.length} lượt</span></h3><div className="flex flex-wrap items-center gap-3"><button onClick={exportToExcel} className="px-4 py-2 bg-emerald-600 text-white text-xs rounded-md flex items-center font-bold shadow-sm hover:bg-emerald-700"><Download size={14} className="mr-1"/> Excel</button><select value={filterType} onChange={(e) => setFilterType(e.target.value)} className="px-3 py-2 text-xs border rounded-md shadow-sm outline-none"><option value="all">Tất cả</option><option value="customer_only">Có khách</option><option value="staff_only">Nội bộ</option></select><input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)} className="px-3 py-2 text-xs border rounded-md shadow-sm outline-none" /></div></div><div className="overflow-x-auto"><table className="w-full text-sm text-left"><thead className="bg-slate-100 font-bold border-b text-slate-600"><tr><th className="p-4">Thời gian</th><th className="p-4">CVKD / Đơn vị</th><th className="p-4">Khách hàng</th><th className="p-4 text-center">SL CVKD</th><th className="p-4 text-center">SL Khách</th><th className="p-4 text-center">Tổng</th><th className="p-4"></th></tr></thead><tbody>{filteredCheckIns.length === 0 ? (<tr><td colSpan={7} className="p-12 text-center text-slate-400 italic">Không tìm thấy dữ liệu</td></tr>) : (filteredCheckIns.map((item: any) => (<tr key={item.firebaseId} className="border-b hover:bg-slate-50 transition-colors"><td className="p-4 text-xs font-medium text-slate-500">{item.timestamp}</td><td className="p-4"><div className="font-bold text-slate-900">{item.staffName}</div><div className="text-[#ea580c] text-xs font-medium">{item.agencyName}</div></td><td className="p-4">{item.hasCustomer ? (<div><div className="font-bold text-slate-900">{item.customerName}</div><div className="text-xs text-slate-500">Tuổi: {item.customerAge}</div></div>) : (<span className="text-slate-300 italic text-xs bg-slate-50 px-2 py-0.5 rounded">Nội bộ</span>)}</td><td className="p-4 text-center font-semibold text-slate-700">{item.staffCount}</td><td className="p-4 text-center font-semibold text-orange-600">{item.customerCount}</td><td className="p-4 text-center font-extrabold text-[#ea580c]">{(item.staffCount || 0) + (item.customerCount || 0)}</td><td className="p-4 text-right">{adminEmail === ROOT_ADMIN_EMAIL && (<button onClick={() => handleDeleteEntry(item.firebaseId)} className="text-slate-300 hover:text-red-500"><Trash2 size={16}/></button>)}</td></tr>)))}</tbody></table></div></div>
+                      <div className="bg-white rounded-xl shadow-sm border overflow-hidden animate-in fade-in"><div className="flex flex-col lg:flex-row justify-between p-4 border-b bg-slate-50 gap-4"><h3 className="font-bold flex items-center text-slate-800">Lịch sử Đăng ký <span className="ml-2 bg-orange-100 text-orange-800 px-3 py-1 rounded-full text-xs font-bold">{filteredCheckIns.length} lượt</span></h3><div className="flex flex-wrap items-center gap-3"><button onClick={exportToExcel} className="px-4 py-2 bg-emerald-600 text-white text-xs rounded-md flex items-center font-bold shadow-sm hover:bg-emerald-700"><Download size={14} className="mr-1"/> Excel</button><select value={filterType} onChange={(e) => setFilterType(e.target.value)} className="px-3 py-2 text-xs border rounded-md shadow-sm outline-none"><option value="all">Tất cả</option><option value="customer_only">Có khách</option><option value="staff_only">Nội bộ</option></select><input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)} className="px-3 py-2 text-xs border rounded-md shadow-sm outline-none" /></div></div><div className="overflow-x-auto"><table className="w-full text-sm text-left"><thead className="bg-slate-100 font-bold border-b text-slate-600"><tr><th className="p-4">Thời gian</th><th className="p-4">CVKD / Đơn vị</th><th className="p-4">Khách hàng</th><th className="p-4 text-center">SL CVKD</th><th className="p-4 text-center">SL Khách</th><th className="p-4 text-center">Tổng</th><th className="p-4"></th></tr></thead><tbody>{filteredCheckIns.length === 0 ? (<tr><td colSpan={7} className="p-12 text-center text-slate-400 italic">Không tìm thấy dữ liệu</td></tr>) : (filteredCheckIns.map((item: any) => (<tr key={item.firebaseId || item.id} className="border-b hover:bg-slate-50 transition-colors"><td className="p-4 text-xs font-medium text-slate-500">{item.timestamp}</td><td className="p-4"><div className="font-bold text-slate-900">{item.staffName}</div><div className="text-[#ea580c] text-xs font-medium">{item.agencyName}</div></td><td className="p-4">{item.hasCustomer ? (<div><div className="font-bold text-slate-900">{item.customerName}</div><div className="text-xs text-slate-500">Tuổi: {item.customerAge}</div></div>) : (<span className="text-slate-300 italic text-xs bg-slate-50 px-2 py-0.5 rounded">Nội bộ</span>)}</td><td className="p-4 text-center font-semibold text-slate-700">{item.staffCount}</td><td className="p-4 text-center font-semibold text-orange-600">{item.customerCount}</td><td className="p-4 text-center font-extrabold text-[#ea580c]">{(item.staffCount || 0) + (item.customerCount || 0)}</td><td className="p-4 text-right">{adminEmail === ROOT_ADMIN_EMAIL && (<button onClick={() => handleDeleteEntry(item.firebaseId || item.id)} className="text-slate-300 hover:text-red-500"><Trash2 size={16}/></button>)}</td></tr>)))}</tbody></table></div></div>
                     )}
 
                     {adminSubTab === 'chart' && (
@@ -464,7 +490,7 @@ const App = () => {
                     </>
                   ) : (
                     <div className="flex flex-col items-center justify-center h-[400px] text-slate-400 font-bold uppercase tracking-widest animate-pulse">
-                      Đang xử lý dữ liệu...
+                      Đang đồng bộ dữ liệu...
                     </div>
                   )}
                 </div>
