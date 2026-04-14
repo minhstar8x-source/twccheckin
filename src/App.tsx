@@ -65,6 +65,28 @@ const getLocalDateString = (date: Date) => {
   return `${y}-${m}-${d}`;
 };
 
+// Chuẩn hóa chuỗi độ tuổi (từ Form và CSV)
+const normalizeAge = (ageStr: string) => {
+  if (!ageStr) return 'Khác';
+  const s = ageStr.toLowerCase().replace(/\s+/g, '');
+  if (s.includes('dưới25') || s.includes('<25')) return '< 25';
+  if (s.includes('25-35') || s.includes('25-34')) return '25-35';
+  if (s.includes('36-45') || s.includes('35-44')) return '36-45';
+  if (s.includes('46-55') || s.includes('45-54')) return '46-55';
+  if (s.includes('trên55') || s.includes('>55')) return '> 55';
+  return 'Khác';
+};
+
+const AGE_GROUPS = ['< 25', '25-35', '36-45', '46-55', '> 55', 'Khác'];
+const AGE_COLORS: Record<string, string> = {
+  '< 25': 'bg-rose-400',
+  '25-35': 'bg-amber-400',
+  '36-45': 'bg-emerald-400',
+  '46-55': 'bg-blue-400',
+  '> 55': 'bg-violet-400',
+  'Khác': 'bg-slate-400'
+};
+
 // Trình phân tích CSV chuẩn xác
 const parseCSVRow = (str: string) => {
   const result = [];
@@ -117,6 +139,7 @@ const App = () => {
   }, [adminSubTab]);
 
   const [chartView, setChartView] = useState<'day' | 'week' | 'month'>('day'); 
+  const [chartMetric, setChartMetric] = useState<'role' | 'age'>('role'); // State mới cho loại biểu đồ
   const [chartFocusDate, setChartFocusDate] = useState(() => getLocalDateString(new Date()));
   const [filterDate, setFilterDate] = useState(''); 
   const [filterType, setFilterType] = useState('all'); 
@@ -301,7 +324,6 @@ const App = () => {
       for (let i = 0; i < dataRows.length; i++) {
         const row = parseCSVRow(dataRows[i]);
 
-        // Cập nhật giao diện mượt mà, chống đứng máy trình duyệt
         if (i % 50 === 0) {
           setImportProgress(Math.round((i / total) * 100));
           await new Promise(r => setTimeout(r, 0));
@@ -309,7 +331,6 @@ const App = () => {
 
         if (row.length < 3) continue;
 
-        // Xử lý an toàn tuyệt đối chống lỗi undefined (bắt nguồn từ việc Excel bị rỗng cột ở đuôi)
         const getStr = (index: number) => (index !== -1 && row[index] !== undefined && row[index] !== null) ? String(row[index]).trim() : '';
         const getNum = (index: number, defaultVal: number) => {
           const val = parseInt(getStr(index));
@@ -362,7 +383,6 @@ const App = () => {
         batchCount++;
         validCount++;
 
-        // Batch ghi tối đa 400 dòng 1 lần theo giới hạn của Firebase
         if (batchCount === 400) {
           await batch.commit();
           batch = writeBatch(db);
@@ -370,7 +390,6 @@ const App = () => {
         }
       }
       
-      // Chốt nốt dữ liệu còn sót lại ở lần lặp cuối
       if (batchCount > 0) {
         await batch.commit();
       }
@@ -388,13 +407,16 @@ const App = () => {
     }
   };
 
+  // NÂNG CẤP XÓA SẠCH DỮ LIỆU: Xóa theo Batch 400 để không treo máy
   const handleClearAllData = async () => {
     if (!window.confirm("CẢNH BÁO NGUY HIỂM: Hành động này sẽ xóa vĩnh viễn TOÀN BỘ dữ liệu check-in trong hệ thống. Bạn có chắc chắn muốn thực hiện?")) return;
     
     setImportLoading(true);
     setImportProgress(0);
-    let count = 0;
-    const total = checkIns.length;
+    
+    // Tạo bản sao danh sách để xóa, tránh xung đột re-render
+    const itemsToDelete = [...checkIns];
+    const total = itemsToDelete.length;
 
     if (total === 0) {
       setImportLoading(false);
@@ -403,31 +425,24 @@ const App = () => {
     }
 
     try {
-      let batch = writeBatch(db);
-      for (const item of checkIns) {
-        const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'gallery_checkins', item.firebaseId);
-        batch.delete(docRef);
-        count++;
+      const chunkSize = 400;
+      for (let i = 0; i < total; i += chunkSize) {
+        const chunk = itemsToDelete.slice(i, i + chunkSize);
+        const batch = writeBatch(db);
+        
+        chunk.forEach(item => {
+          const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'gallery_checkins', item.firebaseId);
+          batch.delete(docRef);
+        });
 
-        if (count % 50 === 0) {
-          setImportProgress(Math.round((count / total) * 100));
-          await new Promise(r => setTimeout(r, 0));
-        }
-
-        if (count % 400 === 0) {
-          await batch.commit();
-          batch = writeBatch(db);
-        }
-      }
-
-      if (count % 400 !== 0) {
         await batch.commit();
+        setImportProgress(Math.round(((i + chunk.length) / total) * 100));
+        await new Promise(r => setTimeout(r, 50)); // Nhường luồng cho UI cập nhật
       }
 
-      setImportProgress(100);
       setTimeout(() => {
         setImportLoading(false);
-        alert(`Đã xóa sạch toàn bộ ${count} dòng dữ liệu.`);
+        alert(`Đã xóa sạch toàn bộ ${total} dòng dữ liệu.`);
       }, 500);
     } catch (err: any) {
       alert("Lỗi khi xóa: " + err.message);
@@ -517,12 +532,14 @@ const App = () => {
     });
   }, [checkIns, filterDate, filterType]);
 
+  // Logic Chart mới hỗ trợ hiển thị theo Đối tượng và Độ tuổi
   const chartData = useMemo<any[]>(() => {
     const dataMap: any = {};
     const [y, m, d] = chartFocusDate.split('-').map(Number);
     const baseDate = new Date(y, m - 1, d);
     baseDate.setHours(0,0,0,0);
 
+    // 1. Khởi tạo các khung thời gian (x-axis)
     if (chartView === 'day') {
       const dayNum = baseDate.getDay();
       const diffToMonday = dayNum === 0 ? -6 : 1 - dayNum;
@@ -533,11 +550,7 @@ const App = () => {
         const d_temp = new Date(monday);
         d_temp.setDate(monday.getDate() + i);
         const dateStr = getLocalDateString(d_temp);
-        dataMap[dateStr] = { 
-          key: dateStr, 
-          label: `${d_temp.getDate()}/${d_temp.getMonth()+1}`, 
-          customers: 0, staff: 0, sortIndex: i 
-        };
+        dataMap[dateStr] = { key: dateStr, label: `${d_temp.getDate()}/${d_temp.getMonth()+1}`, sortIndex: i };
       }
     } else if (chartView === 'week') {
       const monthStart = new Date(baseDate.getFullYear(), baseDate.getMonth(), 1);
@@ -552,54 +565,66 @@ const App = () => {
         const end = new Date(start);
         end.setDate(start.getDate() + 6);
         const key = `week-${i}`;
-        dataMap[key] = {
-          key, label: `Từ ${start.getDate()}/${start.getMonth()+1}`,
-          customers: 0, staff: 0, sortIndex: i, startDate: new Date(start), endDate: new Date(end)
-        };
+        dataMap[key] = { key, label: `Từ ${start.getDate()}/${start.getMonth()+1}`, sortIndex: i, startDate: new Date(start), endDate: new Date(end) };
       }
     } else {
       for (let i = -3; i <= 2; i++) {
         const d_temp = new Date(baseDate.getFullYear(), baseDate.getMonth() + i, 1);
         const key = `${d_temp.getFullYear()}-${d_temp.getMonth() + 1}`;
-        dataMap[key] = { 
-          key, label: `T${d_temp.getMonth() + 1}/${d_temp.getFullYear()}`, 
-          customers: 0, staff: 0, sortIndex: i + 3 
-        };
+        dataMap[key] = { key, label: `T${d_temp.getMonth() + 1}/${d_temp.getFullYear()}`, sortIndex: i + 3 };
       }
     }
 
+    // Thiết lập giá trị 0 mặc định cho từng Bucket tùy theo Metric
+    Object.values(dataMap).forEach((bucket: any) => {
+      bucket.customers = 0; bucket.staff = 0; // Mặc định cho Role
+      AGE_GROUPS.forEach(ag => bucket[ag] = 0); // Mặc định cho Age
+    });
+
+    // 2. Phân loại dữ liệu vào Bucket
     checkIns.forEach((item: any) => {
+      let targetBucket: any = null;
+
       if (chartView === 'day') {
-        if (dataMap[item.date]) {
-          dataMap[item.date].customers += (item.customerCount || 0);
-          dataMap[item.date].staff += (item.staffCount || 0);
-        }
+        targetBucket = dataMap[item.date];
       } else if (chartView === 'week') {
         const [iy, im, id] = item.date.split('-').map(Number);
         const itemDate = new Date(iy, im - 1, id);
         itemDate.setHours(0,0,0,0);
-
-        Object.values(dataMap).forEach((bucket: any) => {
-          if (bucket.startDate && itemDate >= bucket.startDate && itemDate <= bucket.endDate) {
-            bucket.customers += (item.customerCount || 0);
-            bucket.staff += (item.staffCount || 0);
-          }
-        });
+        targetBucket = Object.values(dataMap).find((b: any) => b.startDate && itemDate >= b.startDate && itemDate <= b.endDate);
       } else {
         const [iy, im] = item.date.split('-').map(Number);
-        const key = `${iy}-${im}`;
-        if (dataMap[key]) {
-          dataMap[key].customers += (item.customerCount || 0);
-          dataMap[key].staff += (item.staffCount || 0);
+        targetBucket = dataMap[`${iy}-${im}`];
+      }
+
+      if (targetBucket) {
+        // Phân loại Đối tượng (Role)
+        targetBucket.customers += (item.customerCount || 0);
+        targetBucket.staff += (item.staffCount || 0);
+        
+        // Phân loại Độ tuổi (Age) - Chỉ tính khách hàng
+        if (item.hasCustomer && item.customerCount > 0) {
+          const ageGroup = normalizeAge(item.customerAge);
+          targetBucket[ageGroup] += (item.customerCount || 0);
         }
       }
     });
 
     return Object.values(dataMap).sort((a: any, b: any) => a.sortIndex - b.sortIndex);
-  }, [checkIns, chartView, chartFocusDate]);
+  }, [checkIns, chartView, chartFocusDate, chartMetric]);
 
-  const baseMax = Math.max(5, ...chartData.map((d: any) => Math.max(d.customers, d.staff)));
-  const maxChartValue = Math.ceil(baseMax * 1.5);
+  // Tính toán trục Y linh hoạt
+  const maxChartValue = useMemo(() => {
+    if (chartData.length === 0) return 5;
+    if (chartMetric === 'role') {
+      const baseMax = Math.max(5, ...chartData.map(d => Math.max(d.customers, d.staff)));
+      return Math.ceil(baseMax * 1.4); 
+    } else {
+      // Đối với stacked bar, lấy tổng của cột cao nhất
+      const baseMax = Math.max(5, ...chartData.map(d => AGE_GROUPS.reduce((sum, ag) => sum + d[ag], 0)));
+      return Math.ceil(baseMax * 1.2); 
+    }
+  }, [chartData, chartMetric]);
 
   const isFormValid = useMemo(() => {
     const staffOk = formData.agencyName.trim() !== '' && formData.staffName.trim() !== '' && formData.staffPhone.length >= 4;
@@ -900,7 +925,24 @@ const App = () => {
                         </div>
                         
                         <div className="flex flex-wrap items-center gap-3 w-full xl:w-auto">
-                          <div className="flex items-center space-x-2 bg-slate-100 p-1.5 rounded-lg border">
+                          
+                          {/* Nút Chọn Loại Biểu Đồ (Đối tượng / Độ tuổi) */}
+                          <div className="flex bg-slate-100 p-1 rounded-lg mr-2 border border-slate-200">
+                            <button 
+                              onClick={() => setChartMetric('role')} 
+                              className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${chartMetric === 'role' ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500 hover:text-slate-700'}`}
+                            >
+                              Theo Đối tượng
+                            </button>
+                            <button 
+                              onClick={() => setChartMetric('age')} 
+                              className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${chartMetric === 'age' ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500 hover:text-slate-700'}`}
+                            >
+                              Theo Độ tuổi
+                            </button>
+                          </div>
+
+                          <div className="flex items-center space-x-2 bg-slate-100 p-1.5 rounded-lg border border-slate-200">
                             <button 
                               onClick={() => {
                                 const [y, m, d] = chartFocusDate.split('-').map(Number);
@@ -931,12 +973,12 @@ const App = () => {
                             </button>
                           </div>
 
-                          <div className="flex bg-slate-100 p-1 rounded-lg">
+                          <div className="flex bg-slate-100 p-1 rounded-lg border border-slate-200">
                             {['day', 'week', 'month'].map((view: string) => (
                               <button 
                                 key={view}
                                 onClick={() => setChartView(view as 'day' | 'week' | 'month')} 
-                                className={`px-4 py-1.5 text-xs font-bold rounded-md ${chartView === view ? 'bg-white shadow-sm' : 'text-slate-500'}`}
+                                className={`px-4 py-1.5 text-xs font-bold rounded-md ${chartView === view ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500'}`}
                               >
                                 {view === 'day' ? 'Tuần' : view === 'week' ? 'Tháng' : 'Năm'}
                               </button>
@@ -950,9 +992,22 @@ const App = () => {
                       </div>
                       
                       <div id="admin-chart-container" className="bg-slate-900 rounded-2xl pt-6 pr-6 pb-2 pl-2 border border-slate-800 shadow-inner relative overflow-hidden">
-                        <div className="absolute top-6 right-6 flex space-x-4 text-[10px] font-bold z-20 text-center bg-slate-800/80 px-3 py-1.5 rounded-lg border border-slate-700/50 backdrop-blur-sm">
-                          <div className="flex items-center space-x-1.5 text-orange-400"><div className="w-2.5 h-2.5 bg-orange-500 rounded-sm"></div><span>Khách</span></div>
-                          <div className="flex items-center space-x-1.5 text-cyan-400"><div className="w-2.5 h-2.5 bg-cyan-500 rounded-sm"></div><span>CVKD</span></div>
+                        
+                        {/* CHÚ THÍCH BIỂU ĐỒ (Thay đổi tùy theo loại biểu đồ) */}
+                        <div className="absolute top-6 right-6 flex flex-wrap justify-end gap-3 text-[10px] font-bold z-20 bg-slate-800/80 px-3 py-1.5 rounded-lg border border-slate-700/50 backdrop-blur-sm">
+                          {chartMetric === 'role' ? (
+                            <>
+                              <div className="flex items-center space-x-1.5 text-orange-400"><div className="w-2.5 h-2.5 bg-orange-500 rounded-sm"></div><span>Khách</span></div>
+                              <div className="flex items-center space-x-1.5 text-cyan-400"><div className="w-2.5 h-2.5 bg-cyan-500 rounded-sm"></div><span>CVKD</span></div>
+                            </>
+                          ) : (
+                            AGE_GROUPS.map(ag => (
+                              <div key={ag} className="flex items-center space-x-1.5 text-slate-200">
+                                <div className={`w-2.5 h-2.5 rounded-sm ${AGE_COLORS[ag]}`}></div>
+                                <span>{ag}</span>
+                              </div>
+                            ))
+                          )}
                         </div>
 
                         <div className="h-80 flex relative pl-16 pr-4 pb-12 pt-12">
@@ -974,21 +1029,44 @@ const App = () => {
                               ))}
                             </div>
 
-                            {/* Bars */}
+                            {/* BARS: Hiển thị tùy loại */}
                             <div className="absolute inset-0 flex items-end justify-around">
-                              {chartData.map((d: any) => (
+                              {chartData.map((d: any) => {
+                                const stackedTotal = AGE_GROUPS.reduce((sum, ag) => sum + d[ag], 0);
+
+                                return (
                                 <div key={d.key} className="flex flex-col items-center flex-1 h-full relative group justify-end pb-[1px]">
-                                  <div className="flex items-end justify-center space-x-1 sm:space-x-2 w-full h-full relative z-10">
-                                    <div style={{ height: `${d.customers === 0 ? 0 : Math.max((d.customers / maxChartValue) * 100, 4)}%` }} className="w-full max-w-[28px] bg-gradient-to-t from-orange-600 to-orange-400 rounded-t-sm shadow-[0_0_10px_rgba(234,88,12,0.3)] relative transition-all group-hover:brightness-125">
-                                      {d.customers > 0 && <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[10px] font-bold text-orange-400">{d.customers}</span>}
+                                  {chartMetric === 'role' ? (
+                                    // BIỂU ĐỒ CVKD & KHÁCH (CỘT SONG SONG)
+                                    <div className="flex items-end justify-center space-x-1 sm:space-x-2 w-full h-full relative z-10">
+                                      <div style={{ height: `${d.customers === 0 ? 0 : Math.max((d.customers / maxChartValue) * 100, 4)}%` }} className="w-full max-w-[28px] bg-gradient-to-t from-orange-600 to-orange-400 rounded-t-sm shadow-[0_0_10px_rgba(234,88,12,0.3)] relative transition-all group-hover:brightness-125">
+                                        {d.customers > 0 && <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[10px] font-bold text-orange-400">{d.customers}</span>}
+                                      </div>
+                                      <div style={{ height: `${d.staff === 0 ? 0 : Math.max((d.staff / maxChartValue) * 100, 4)}%` }} className="w-full max-w-[28px] bg-gradient-to-t from-cyan-600 to-cyan-400 rounded-t-sm shadow-[0_0_10px_rgba(6,182,212,0.3)] relative transition-all group-hover:brightness-125">
+                                        {d.staff > 0 && <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[10px] font-bold text-cyan-400">{d.staff}</span>}
+                                      </div>
                                     </div>
-                                    <div style={{ height: `${d.staff === 0 ? 0 : Math.max((d.staff / maxChartValue) * 100, 4)}%` }} className="w-full max-w-[28px] bg-gradient-to-t from-cyan-600 to-cyan-400 rounded-t-sm shadow-[0_0_10px_rgba(6,182,212,0.3)] relative transition-all group-hover:brightness-125">
-                                      {d.staff > 0 && <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[10px] font-bold text-cyan-400">{d.staff}</span>}
+                                  ) : (
+                                    // BIỂU ĐỒ ĐỘ TUỔI KHÁCH HÀNG (CỘT CHỒNG - STACKED)
+                                    <div className="flex flex-col-reverse items-center justify-start w-full h-full relative z-10 max-w-[32px]">
+                                      {AGE_GROUPS.map(ag => {
+                                        const val = d[ag];
+                                        if (val === 0) return null;
+                                        const heightPct = (val / maxChartValue) * 100;
+                                        return (
+                                          <div key={ag} style={{ height: `${heightPct}%` }} className={`w-full ${AGE_COLORS[ag]} relative border-t border-slate-900/30 transition-all hover:brightness-110 flex items-center justify-center min-h-[4px]`}>
+                                            {/* Chỉ hiện số lượng nếu cột đủ cao để không bị đè chữ */}
+                                            {heightPct > 8 && <span className="text-[10px] font-bold text-slate-900 drop-shadow-sm">{val}</span>}
+                                          </div>
+                                        )
+                                      })}
+                                      {/* Hiện tổng khách trên cùng */}
+                                      {stackedTotal > 0 && <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[10px] font-bold text-slate-300">{stackedTotal}</span>}
                                     </div>
-                                  </div>
+                                  )}
                                   <span className="absolute -bottom-8 text-[9px] font-bold text-slate-400 text-center w-full leading-tight whitespace-pre-wrap px-1">{d.label}</span>
                                 </div>
-                              ))}
+                              )})}
                             </div>
                           </div>
                         </div>
