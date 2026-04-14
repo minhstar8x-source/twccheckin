@@ -14,7 +14,9 @@ import {
   Download, 
   Camera, 
   Loader2, 
-  History 
+  History,
+  FileSpreadsheet,
+  Upload
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { 
@@ -28,7 +30,7 @@ import {
   getRedirectResult, 
   signOut 
 } from 'firebase/auth';
-import { getFirestore, collection, addDoc, onSnapshot, deleteDoc, doc } from 'firebase/firestore';
+import { getFirestore, collection, addDoc, onSnapshot, deleteDoc, doc, writeBatch } from 'firebase/firestore';
 
 // === CẤU HÌNH CƠ BẢN ===
 const ROOT_ADMIN_EMAIL = 'minhpv@thangloigroup.vn'; 
@@ -91,11 +93,13 @@ const App = () => {
     localStorage.setItem('twc_adminList', JSON.stringify(adminList));
   }, [adminList]);
 
-  // --- MANUAL ENTRY STATE ---
+  // --- MANUAL & IMPORT STATE ---
   const [manualDate, setManualDate] = useState('');
   const [manualStaff, setManualStaff] = useState(1);
   const [manualCustomer, setManualCustomer] = useState(0);
   const [newAdminEmail, setNewAdminEmail] = useState('');
+  const [importLoading, setImportLoading] = useState(false);
+  const [importProgress, setImportProgress] = useState(0);
 
   // --- FIREBASE AUTH ---
   useEffect(() => {
@@ -168,7 +172,7 @@ const App = () => {
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
     if ((name === 'staffPhone' || name === 'customerPhone')) {
-      const regex = /^[0-9]{0,4}$/;
+      const regex = /^[0-9]{0,12}$/; // Cho phép dán cả số dài nếu từ Excel
       if (!regex.test(value)) return;
     }
     setFormData({ ...formData, [name]: value });
@@ -186,10 +190,11 @@ const App = () => {
       timestamp: today.toLocaleString('vi-VN'),
       hasCustomer: hasCustomer,
       customerName: hasCustomer ? formData.customerName : '',
-      customerPhone: hasCustomer ? formData.customerPhone : '',
+      customerPhone: hasCustomer ? (formData.customerPhone.length > 4 ? formData.customerPhone.slice(-4) : formData.customerPhone) : '',
       customerAge: hasCustomer ? formData.customerAge : '',
       customerCount: hasCustomer ? parseInt(String(formData.customerCount)) || 0 : 0,
       staffCount: parseInt(String(formData.staffCount)) || 1,
+      staffPhone: formData.staffPhone.length > 4 ? formData.staffPhone.slice(-4) : formData.staffPhone
     };
 
     try {
@@ -201,6 +206,107 @@ const App = () => {
       setTimeout(() => setShowSuccess(false), 3000);
     } catch(error: any) {
       alert("Lỗi lưu dữ liệu: " + error.message);
+    }
+  };
+
+  // --- BULK IMPORT LOGIC ---
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      const content = event.target?.result as string;
+      processCSV(content);
+    };
+    reader.readAsText(file);
+  };
+
+  const processCSV = async (csvText: string) => {
+    setImportLoading(true);
+    setImportProgress(0);
+    
+    // Tách dòng, bỏ dòng tiêu đề
+    const lines = csvText.split(/\r?\n/).filter(line => line.trim() !== "");
+    if (lines.length < 2) {
+      alert("Tệp không có dữ liệu.");
+      setImportLoading(false);
+      return;
+    }
+
+    // Phân tích header để ánh xạ cột
+    const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+    
+    // Tìm vị trí các cột dựa trên tên trong tệp của bạn
+    const idx = {
+      ts: headers.findIndex(h => h.includes("dấu thời gian")),
+      agency: headers.findIndex(h => h.includes("tên đơn vị")),
+      staff: headers.findIndex(h => h.includes("họ và tên cvtv")),
+      sPhone: headers.findIndex(h => h.includes("số điện thoại cvtv")),
+      cName: headers.findIndex(h => h.includes("tên khách hàng")),
+      cCount: headers.findIndex(h => h.includes("số lượng khách hàng")),
+      cPhone: headers.findIndex(h => h.includes("số điện thoại kh")),
+      age: headers.findIndex(h => h.includes("độ tuổi")),
+      sCount: headers.findIndex(h => h.includes("số lượng cvtv"))
+    };
+
+    const collectionPath = collection(db, 'artifacts', appId, 'public', 'data', 'gallery_checkins');
+    const dataRows = lines.slice(1);
+    const total = dataRows.length;
+    
+    // Sử dụng batch để đẩy nhanh (Firestore giới hạn 500 docs per batch)
+    let batch = writeBatch(db);
+    let count = 0;
+
+    try {
+      for (let i = 0; i < dataRows.length; i++) {
+        // Handle CSV split with quotes (regex for CSV)
+        const row = dataRows[i].match(/(".*?"|[^",\s]+)(?=\s*,|\s*$)/g) || [];
+        if (row.length < 3) continue;
+
+        const clean = (val: string) => val ? val.replace(/"/g, '').trim() : '';
+        
+        const timestampRaw = clean(row[idx.ts]);
+        const dateObj = new Date(timestampRaw);
+        const dateStr = !isNaN(dateObj.getTime()) ? dateObj.toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
+
+        const docData = {
+          id: Date.now() + i,
+          date: dateStr,
+          timestamp: timestampRaw || new Date().toLocaleString('vi-VN'),
+          agencyName: clean(row[idx.agency]),
+          staffName: clean(row[idx.staff]),
+          staffPhone: clean(row[idx.sPhone]).slice(-4),
+          staffCount: parseInt(clean(row[idx.sCount])) || 1,
+          customerName: clean(row[idx.cName]),
+          customerCount: parseInt(clean(row[idx.cCount])) || 0,
+          customerPhone: clean(row[idx.cPhone]).slice(-4),
+          customerAge: clean(row[idx.age]),
+          hasCustomer: (parseInt(clean(row[idx.cCount])) || 0) > 0,
+          isImported: true
+        };
+
+        const newDocRef = doc(collectionPath);
+        batch.set(newDocRef, docData);
+        
+        count++;
+        if (count % 400 === 0) {
+          await batch.commit();
+          batch = writeBatch(db);
+          setImportProgress(Math.round((i / total) * 100));
+        }
+      }
+      
+      await batch.commit();
+      setImportProgress(100);
+      setTimeout(() => {
+        setImportLoading(false);
+        alert(`Đã nhập thành công ${count} dòng dữ liệu!`);
+        setAdminSubTab('list');
+      }, 500);
+    } catch (err: any) {
+      alert("Lỗi khi nhập dữ liệu: " + err.message);
+      setImportLoading(false);
     }
   };
 
@@ -339,21 +445,21 @@ const App = () => {
       
       if (chartView === 'day') {
         if (dataMap[item.date]) {
-          dataMap[item.date].customers += item.customerCount;
-          dataMap[item.date].staff += item.staffCount;
+          dataMap[item.date].customers += (item.customerCount || 0);
+          dataMap[item.date].staff += (item.staffCount || 0);
         }
       } else if (chartView === 'week') {
         Object.values(dataMap).forEach((bucket: any) => {
           if (itemDate >= bucket.startDate && itemDate <= bucket.endDate) {
-            bucket.customers += item.customerCount;
-            bucket.staff += item.staffCount;
+            bucket.customers += (item.customerCount || 0);
+            bucket.staff += (item.staffCount || 0);
           }
         });
       } else {
         const key = `${itemDate.getFullYear()}-${itemDate.getMonth() + 1}`;
         if (dataMap[key]) {
-          dataMap[key].customers += item.customerCount;
-          dataMap[key].staff += item.staffCount;
+          dataMap[key].customers += (item.customerCount || 0);
+          dataMap[key].staff += (item.staffCount || 0);
         }
       }
     });
@@ -366,9 +472,9 @@ const App = () => {
 
   // --- UI HELPERS ---
   const isFormValid = useMemo(() => {
-    const staffOk = formData.agencyName.trim() !== '' && formData.staffName.trim() !== '' && formData.staffPhone.length === 4;
+    const staffOk = formData.agencyName.trim() !== '' && formData.staffName.trim() !== '' && formData.staffPhone.length >= 4;
     if (!hasCustomer) return staffOk;
-    return staffOk && formData.customerName.trim() !== '' && formData.customerPhone.length === 4 && formData.customerAge !== '';
+    return staffOk && formData.customerName.trim() !== '' && formData.customerPhone.length >= 4 && formData.customerAge !== '';
   }, [formData, hasCustomer]);
 
   const exportChartImage = async () => {
@@ -387,7 +493,6 @@ const App = () => {
           allowTaint: false
         });
         
-        // Chuyển sang DataURL để tương thích cao hơn trên di động thay vì toBlob
         const dataUrl = canvas.toDataURL('image/png');
         const link = document.createElement('a');
         link.download = `Gallery_Chart_${new Date().getTime()}.png`;
@@ -397,8 +502,7 @@ const App = () => {
         document.body.removeChild(link);
         setIsExporting(false);
       } catch (e) {
-        console.error("Lỗi xuất ảnh:", e);
-        alert("Lỗi: Trình duyệt không hỗ trợ chụp ảnh vùng này hoặc bị chặn bởi quyền riêng tư.");
+        alert("Lỗi: Không thể lưu ảnh. Vui lòng thử lại.");
         setIsExporting(false);
       }
     };
@@ -423,7 +527,7 @@ const App = () => {
       item.timestamp, item.agencyName, item.staffName, item.staffCount, 
       item.hasCustomer ? item.customerName : 'N/A', 
       item.customerCount, 
-      item.staffCount + item.customerCount
+      (item.staffCount || 0) + (item.customerCount || 0)
     ]);
     const csvContent = "\ufeff" + [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -473,12 +577,7 @@ const App = () => {
               <div className="w-full h-48 sm:h-72 bg-cover bg-center relative flex items-center justify-center px-4" style={{ backgroundImage: `url('${BANNER_IMAGE_URL}')` }}>
                 <div className="absolute inset-0 bg-black/55"></div>
                 <div className="relative z-10 text-center">
-                  <h2 
-                    className="text-2xl sm:text-4xl font-extrabold uppercase drop-shadow-lg text-white" 
-                    style={{ color: '#ffffff' }}
-                  >
-                    CHECK IN THE WIN CITY GALLERY
-                  </h2>
+                  <h2 className="text-2xl sm:text-4xl font-extrabold uppercase drop-shadow-lg text-white" style={{ color: '#ffffff' }}>CHECK IN THE WIN CITY GALLERY</h2>
                   <p className="text-sm sm:text-lg font-medium opacity-90 text-white">Vui lòng điền thông tin để được hỗ trợ tốt nhất</p>
                 </div>
               </div>
@@ -499,7 +598,7 @@ const App = () => {
                     </div>
                     <div className="space-y-2">
                       <label className="text-sm font-semibold text-slate-700">SĐT CVKD (4 số cuối)</label>
-                      <input type="text" name="staffPhone" required minLength={4} maxLength={4} value={formData.staffPhone} onChange={handleInputChange} className="w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-[#ea580c] outline-none" placeholder="8888" />
+                      <input type="text" name="staffPhone" required minLength={4} value={formData.staffPhone} onChange={handleInputChange} className="w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-[#ea580c] outline-none" placeholder="8888" />
                     </div>
                     <div className="space-y-2">
                       <label className="text-sm font-semibold text-slate-700">Số lượng CVKD đi cùng</label>
@@ -526,7 +625,7 @@ const App = () => {
                       </div>
                       <div className="space-y-2">
                         <label className="text-sm font-semibold text-slate-700">SĐT Khách (4 số cuối)</label>
-                        <input type="text" name="customerPhone" required={hasCustomer} minLength={4} maxLength={4} value={formData.customerPhone} onChange={handleInputChange} className="w-full px-4 py-3 border rounded-lg outline-none focus:ring-2 focus:ring-[#ea580c]" />
+                        <input type="text" name="customerPhone" required={hasCustomer} minLength={4} value={formData.customerPhone} onChange={handleInputChange} className="w-full px-4 py-3 border rounded-lg outline-none focus:ring-2 focus:ring-[#ea580c]" />
                       </div>
                       <div className="space-y-2">
                         <label className="text-sm font-semibold text-slate-700">Số lượng Khách</label>
@@ -566,10 +665,11 @@ const App = () => {
               <div className="flex flex-col h-full">
                 <div className="p-4 bg-slate-900 text-white flex flex-col sm:flex-row justify-between items-center gap-4">
                   <div className="flex items-center space-x-2 font-bold"><ShieldCheck size={20} className="text-orange-400" /> <span>ADMIN AREA</span></div>
-                  <div className="flex bg-slate-800 p-1 rounded-lg w-full sm:w-auto">
+                  <div className="flex bg-slate-800 p-1 rounded-lg w-full sm:w-auto overflow-x-auto whitespace-nowrap">
                     <button onClick={() => setAdminSubTab('list')} className={`flex-1 px-4 py-1.5 text-sm font-semibold rounded-md ${adminSubTab === 'list' ? 'bg-[#ea580c]' : ''}`}>Danh sách</button>
                     <button onClick={() => setAdminSubTab('chart')} className={`flex-1 px-4 py-1.5 text-sm font-semibold rounded-md ${adminSubTab === 'chart' ? 'bg-[#ea580c]' : ''}`}>Thống kê</button>
                     <button onClick={() => setAdminSubTab('manual')} className={`flex-1 px-4 py-1.5 text-sm font-semibold rounded-md ${adminSubTab === 'manual' ? 'bg-[#ea580c]' : ''}`}>Nhập liệu cũ</button>
+                    <button onClick={() => setAdminSubTab('import')} className={`flex-1 px-4 py-1.5 text-sm font-semibold rounded-md ${adminSubTab === 'import' ? 'bg-[#ea580c]' : ''}`}>Nhập Excel/CSV</button>
                     {adminEmail === ROOT_ADMIN_EMAIL && <button onClick={() => setAdminSubTab('settings')} className={`flex-1 px-4 py-1.5 text-sm font-semibold rounded-md ${adminSubTab === 'settings' ? 'bg-[#ea580c]' : ''}`}>Cài đặt</button>}
                   </div>
                 </div>
@@ -626,7 +726,7 @@ const App = () => {
                                   </td>
                                   <td className="p-4 text-center font-semibold text-slate-700">{item.staffCount}</td>
                                   <td className="p-4 text-center font-semibold text-orange-600">{item.customerCount}</td>
-                                  <td className="p-4 text-center font-extrabold text-[#ea580c]">{item.staffCount + item.customerCount}</td>
+                                  <td className="p-4 text-center font-extrabold text-[#ea580c]">{(item.staffCount || 0) + (item.customerCount || 0)}</td>
                                   <td className="p-4 text-right">
                                     {adminEmail === ROOT_ADMIN_EMAIL && (
                                       <button 
@@ -737,6 +837,46 @@ const App = () => {
                             <Plus size={20} /> Lưu dữ liệu
                           </button>
                         </form>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* NHẬP EXCEL/CSV */}
+                  {adminSubTab === 'import' && (
+                    <div className="max-w-2xl mx-auto animate-in fade-in">
+                      <div className="bg-white p-8 rounded-xl shadow-sm border text-center">
+                        <div className="bg-orange-50 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6">
+                          <FileSpreadsheet size={40} className="text-[#ea580c]" />
+                        </div>
+                        <h3 className="text-xl font-bold mb-2">Nhập dữ liệu từ Excel/CSV</h3>
+                        <p className="text-slate-500 text-sm mb-8">Hệ thống sẽ tự động đồng bộ hóa các cột thông tin từ tệp Excel của Thắng Lợi Group Gallery.</p>
+                        
+                        {importLoading ? (
+                          <div className="space-y-4">
+                            <div className="w-full bg-slate-200 h-4 rounded-full overflow-hidden">
+                              <div className="bg-[#ea580c] h-full transition-all duration-300" style={{ width: `${importProgress}%` }}></div>
+                            </div>
+                            <p className="text-sm font-bold text-[#ea580c]">Đang xử lý... {importProgress}%</p>
+                          </div>
+                        ) : (
+                          <div className="space-y-6">
+                            <label className="block w-full border-2 border-dashed border-slate-200 rounded-2xl p-12 hover:border-[#ea580c] hover:bg-orange-50/30 transition-all cursor-pointer">
+                              <input type="file" accept=".csv" className="hidden" onChange={handleFileUpload} />
+                              <Upload className="mx-auto text-slate-400 mb-4" size={32} />
+                              <span className="block font-bold text-slate-700 mb-1">Bấm để chọn tệp CSV</span>
+                              <span className="text-xs text-slate-400 uppercase tracking-widest font-bold">Chỉ hỗ trợ định dạng .CSV</span>
+                            </label>
+                            
+                            <div className="text-left bg-slate-50 p-4 rounded-xl border border-slate-200">
+                              <h4 className="font-bold text-xs text-slate-600 uppercase mb-3">Lưu ý khi nhập:</h4>
+                              <ul className="text-xs text-slate-500 space-y-2 list-disc pl-4">
+                                <li>Phải lưu tệp từ Excel sang định dạng **CSV (Comma delimited)** trước khi tải lên.</li>
+                                <li>Hệ thống tự nhận diện các cột: Dấu thời gian, Tên đơn vị, Họ tên CVTV, SL Khách, SL CVTV...</li>
+                                <li>Vui lòng không tắt trình duyệt khi thanh tiến trình đang chạy.</li>
+                              </ul>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
                   )}
