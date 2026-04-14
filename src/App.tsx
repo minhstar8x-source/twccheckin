@@ -324,11 +324,6 @@ const App = () => {
       for (let i = 0; i < dataRows.length; i++) {
         const row = parseCSVRow(dataRows[i]);
 
-        if (i % 50 === 0) {
-          setImportProgress(Math.round((i / total) * 100));
-          await new Promise(r => setTimeout(r, 0));
-        }
-
         if (row.length < 3) continue;
 
         const getStr = (index: number) => (index !== -1 && row[index] !== undefined && row[index] !== null) ? String(row[index]).trim() : '';
@@ -383,10 +378,17 @@ const App = () => {
         batchCount++;
         validCount++;
 
-        if (batchCount === 400) {
+        // GIẢM CHUNK SIZE XUỐNG 100 VÀ BẮT BUỘC DELAY ĐỂ KHÔNG TREO UI HOẶC BỊ RATE LIMIT
+        if (batchCount >= 100) {
           await batch.commit();
           batch = writeBatch(db);
           batchCount = 0;
+          setImportProgress(Math.round(((i + 1) / total) * 100));
+          await new Promise(r => setTimeout(r, 30)); // Delay 30ms cho Firebase kịp xử lý
+        } else if (i % 25 === 0) {
+          // Chỉ update UI hiển thị, không gửi lên server
+          setImportProgress(Math.round(((i + 1) / total) * 100));
+          await new Promise(r => setTimeout(r, 5));
         }
       }
       
@@ -407,7 +409,7 @@ const App = () => {
     }
   };
 
-  // NÂNG CẤP XÓA SẠCH DỮ LIỆU: Xóa theo Batch 400 để không treo máy
+  // NÂNG CẤP XÓA SẠCH DỮ LIỆU: Xóa theo Batch 100 để không treo máy
   const handleClearAllData = async () => {
     if (!window.confirm("CẢNH BÁO NGUY HIỂM: Hành động này sẽ xóa vĩnh viễn TOÀN BỘ dữ liệu check-in trong hệ thống. Bạn có chắc chắn muốn thực hiện?")) return;
     
@@ -425,7 +427,7 @@ const App = () => {
     }
 
     try {
-      const chunkSize = 400;
+      const chunkSize = 100; // Giảm chunk xuống 100 để an toàn
       for (let i = 0; i < total; i += chunkSize) {
         const chunk = itemsToDelete.slice(i, i + chunkSize);
         const batch = writeBatch(db);
@@ -437,7 +439,7 @@ const App = () => {
 
         await batch.commit();
         setImportProgress(Math.round(((i + chunk.length) / total) * 100));
-        await new Promise(r => setTimeout(r, 50)); // Nhường luồng cho UI cập nhật
+        await new Promise(r => setTimeout(r, 30)); // Nhường luồng cho UI cập nhật mượt mà
       }
 
       setTimeout(() => {
