@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Building2, 
   User as UserIcon, 
@@ -18,7 +18,9 @@ import {
   AlertTriangle,
   ChevronLeft,
   ChevronRight,
-  Loader2
+  Loader2,
+  Camera,
+  Search
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { 
@@ -31,7 +33,7 @@ import {
   getRedirectResult, 
   signOut 
 } from 'firebase/auth';
-import { getFirestore, collection, addDoc, onSnapshot, deleteDoc, doc, writeBatch } from 'firebase/firestore';
+import { getFirestore, collection, addDoc, onSnapshot, doc, writeBatch } from 'firebase/firestore';
 
 // === CẤU HÌNH CƠ BẢN ===
 const ROOT_ADMIN_EMAIL = 'minhpv@thangloigroup.vn'; 
@@ -55,12 +57,12 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 const appId = typeof w.__app_id !== 'undefined' ? w.__app_id : 'default-app-id';
 
-// Helper: HÀM ÉP TIMEOUT CHỐNG TREO QUAY QUAY
+// Helper: HÀM ÉP TIMEOUT CHỐNG TREO QUAY QUAY TỐI ƯU
 const commitBatchWithTimeout = (batch: any, timeoutMs = 15000) => {
   return Promise.race([
     batch.commit(),
     new Promise((_, reject) => 
-      setTimeout(() => reject(new Error("Mạng chậm hoặc kẹt máy chủ, đã tự động ngắt kết nối để tránh treo trình duyệt!")), timeoutMs)
+      setTimeout(() => reject(new Error("Mạng chậm hoặc kẹt máy chủ, đã ngắt kết nối an toàn.")), timeoutMs)
     )
   ]);
 };
@@ -89,31 +91,34 @@ const AGE_COLORS: Record<string, string> = {
   '< 25': 'bg-rose-400', '25-35': 'bg-amber-400', '36-45': 'bg-emerald-400', '46-55': 'bg-blue-400', '> 55': 'bg-violet-400', 'Khác': 'bg-slate-400'
 };
 
-// Thuật toán Đọc CSV siêu cấp: Chống lỗi khi khách hàng bấm Enter xuống dòng trong ô Excel
+// Thuật toán Đọc CSV V2: Xử lý ngoặc kép và Enter xuống dòng cực kỳ chính xác
 const parseCSVFull = (text: string) => {
   const rows: string[][] = [];
   let currentRow: string[] = [];
   let currentCell = '';
   let inQuotes = false;
+  
   for (let i = 0; i < text.length; i++) {
     const char = text[i];
     if (char === '"') {
-      if (inQuotes && text[i+1] === '"') { currentCell += '"'; i++; }
+      if (inQuotes && text[i+1] === '"') { currentCell += '"'; i++; } // Ngoặc kép đôi bên trong
       else { inQuotes = !inQuotes; }
     } else if (char === ',' && !inQuotes) {
       currentRow.push(currentCell.trim()); currentCell = '';
-    } else if (char === '\n' && !inQuotes) {
-      currentRow.push(currentCell.trim()); rows.push(currentRow); currentRow = []; currentCell = '';
-    } else if (char === '\r' && !inQuotes) {
-      // bỏ qua ký tự \r
+    } else if ((char === '\n' || char === '\r') && !inQuotes) {
+      if (char === '\r' && text[i+1] === '\n') i++; // Xử lý \r\n
+      currentRow.push(currentCell.trim());
+      if (currentRow.some(c => c !== '')) rows.push(currentRow); // Chỉ lấy dòng có data
+      currentRow = []; currentCell = '';
     } else {
       currentCell += char;
     }
   }
-  if (currentRow.length > 0 || currentCell) {
-    currentRow.push(currentCell.trim()); rows.push(currentRow);
+  if (currentCell || currentRow.length > 0) {
+    currentRow.push(currentCell.trim());
+    if (currentRow.some(c => c !== '')) rows.push(currentRow);
   }
-  return rows.filter(r => r.join('').trim() !== '');
+  return rows;
 };
 
 const App = () => {
@@ -136,18 +141,19 @@ const App = () => {
   const [chartFocusDate, setChartFocusDate] = useState(() => getLocalDateString(new Date()));
   const [filterDate, setFilterDate] = useState(''); 
   const [filterType, setFilterType] = useState('all'); 
+  const [searchQuery, setSearchQuery] = useState('');
   
   const [adminList, setAdminList] = useState<string[]>(() => {
     try { const saved = localStorage.getItem('twc_adminList'); return saved ? JSON.parse(saved) : [ROOT_ADMIN_EMAIL]; } catch { return [ROOT_ADMIN_EMAIL]; }
   });
   useEffect(() => localStorage.setItem('twc_adminList', JSON.stringify(adminList)), [adminList]);
 
-  // IMPORT / LOADING
-  const [importLoading, setImportLoading] = useState(false);
+  // IMPORT / LOADING STATES (Cờ báo hiệu để tối ưu RAM)
+  const [isProcessingData, setIsProcessingData] = useState(false);
   const [importProgress, setImportProgress] = useState(0);
   const [importStatusText, setImportStatusText] = useState("");
 
-  const [manualDate, setManualDate] = useState('');
+  const [manualDate, setManualDate] = useState(() => getLocalDateString(new Date()));
   const [manualStaff, setManualStaff] = useState(1);
   const [manualCustomer, setManualCustomer] = useState(0);
   const [newAdminEmail, setNewAdminEmail] = useState('');
@@ -179,21 +185,22 @@ const App = () => {
     return () => unsubscribe();
   }, [adminList]);
 
-  // FIRESTORE
+  // FIRESTORE LISTENER
   useEffect(() => {
-    // Ngắt kết nối lắng nghe dữ liệu khi đang Import/Xóa để RAM không bị đầy
-    if (!user || !firebaseConfig.apiKey || importLoading) return; 
+    // TỐI ƯU CỰC KỲ QUAN TRỌNG: Ngắt hoàn toàn lắng nghe dữ liệu khi đang nhập/xóa
+    // Điều này giúp React không phải Render lại 4000 dòng liên tục mỗi khi ghi xong 1 gói nhỏ
+    if (!user || !firebaseConfig.apiKey || isProcessingData) return; 
     
     const collectionPath = collection(db, 'artifacts', appId, 'public', 'data', 'gallery_checkins');
     const unsubscribe = onSnapshot(collectionPath, (snapshot) => {
       const data = snapshot.docs.map((doc: any) => ({ firebaseId: doc.id, ...doc.data() }));
-      data.sort((a: any, b: any) => b.id - a.id); 
+      data.sort((a: any, b: any) => b.id - a.id); // Sắp xếp ID mới nhất lên đầu
       setCheckIns(data);
     }, (error) => {
       console.error("Firestore error:", error);
     });
     return () => unsubscribe();
-  }, [user, importLoading]);
+  }, [user, isProcessingData]);
 
   // FORM
   const [hasCustomer, setHasCustomer] = useState(true);
@@ -215,13 +222,19 @@ const App = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const today = new Date();
-    const newCheckIn = { ...formData, id: Date.now(), date: getLocalDateString(today), timestamp: today.toLocaleString('vi-VN'), hasCustomer,
-      customerName: hasCustomer ? formData.customerName : '',
-      customerPhone: hasCustomer ? (formData.customerPhone.slice(-4)) : '',
+    const newCheckIn = { 
+      id: Date.now(), 
+      date: getLocalDateString(today), 
+      timestamp: today.toLocaleString('vi-VN'), 
+      agencyName: formData.agencyName.trim(),
+      staffName: formData.staffName.trim(),
+      staffPhone: formData.staffPhone.slice(-4),
+      staffCount: parseInt(String(formData.staffCount)) || 1,
+      hasCustomer,
+      customerName: hasCustomer ? formData.customerName.trim() : '',
+      customerPhone: hasCustomer ? formData.customerPhone.slice(-4) : '',
       customerAge: hasCustomer ? formData.customerAge : '',
       customerCount: hasCustomer ? parseInt(String(formData.customerCount)) || 0 : 0,
-      staffCount: parseInt(String(formData.staffCount)) || 1,
-      staffPhone: formData.staffPhone.slice(-4)
     };
     try {
       await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'gallery_checkins'), newCheckIn);
@@ -230,24 +243,23 @@ const App = () => {
   };
 
   // ======================================================================
-  // CHỨC NĂNG XÓA DỮ LIỆU ĐÃ NÂNG CẤP (XỬ LÝ DỨT ĐIỂM LỖI QUAY QUAY)
+  // CHỨC NĂNG XÓA DỮ LIỆU SỐ LƯỢNG LỚN (ĐÃ TỐI ƯU BULLETPROOF)
   // ======================================================================
   const handleClearAllData = async () => {
-    if (!window.confirm("CẢNH BÁO MẠNH: Xóa vĩnh viễn TOÀN BỘ dữ liệu? Hành động này không thể hoàn tác.")) return;
-    const itemsToDelete = [...checkIns];
-    if (itemsToDelete.length === 0) return;
+    if (!window.confirm(`CẢNH BÁO: Xóa vĩnh viễn TOÀN BỘ ${checkIns.length} dòng dữ liệu hiện tại? Hành động này không thể hoàn tác!`)) return;
+    if (checkIns.length === 0) return;
 
-    setImportLoading(true);
+    setIsProcessingData(true);
     setImportProgress(0);
-    setImportStatusText("Đang bắt đầu dọn dẹp...");
+    setImportStatusText("Đang dọn dẹp hệ thống...");
 
     try {
-      // BÍ QUYẾT: Giảm gói xuống 100 thay vì 400. Mạng duyệt rất nhanh, không sợ nghẽn.
-      const chunkSize = 100; 
+      const chunkSize = 200; // Firebase cho 500, ta dùng 200 cho an toàn tuyệt đối
+      const total = checkIns.length;
       
-      for (let i = 0; i < itemsToDelete.length; i += chunkSize) {
+      for (let i = 0; i < total; i += chunkSize) {
         const batch = writeBatch(db);
-        const chunk = itemsToDelete.slice(i, i + chunkSize);
+        const chunk = checkIns.slice(i, i + chunkSize);
         
         chunk.forEach(item => {
           if (item.firebaseId) {
@@ -255,52 +267,53 @@ const App = () => {
           }
         });
 
-        // Sử dụng hàm ép Timeout tự viết để chống treo im lặng
         await commitBatchWithTimeout(batch);
         
-        const progress = Math.round(((i + chunk.length) / itemsToDelete.length) * 100);
+        const progress = Math.round(((i + chunk.length) / total) * 100);
         setImportProgress(progress > 100 ? 100 : progress);
-        setImportStatusText(`Đã dọn dẹp: ${i + chunk.length} / ${itemsToDelete.length} dòng...`);
+        setImportStatusText(`Đã xóa: ${i + chunk.length} / ${total} dòng...`);
         
-        // Thời gian nghỉ ngắn gọn hơn (0.5s), vừa đủ để máy chủ tiêu hóa
-        await new Promise(r => setTimeout(r, 500));
+        // Nhường quyền ưu tiên cho trình duyệt (yield to main thread)
+        await new Promise(r => setTimeout(r, 200)); 
       }
 
       setImportProgress(100);
-      setCheckIns([]); // Xóa sạch rác trong RAM trước khi tắt Loading
-      
-      setTimeout(() => { 
-        setImportLoading(false); 
-        alert("Tuyệt vời! Đã dọn sạch toàn bộ hệ thống dữ liệu thành công."); 
-      }, 500);
-      
+      setCheckIns([]); // Dọn rác RAM
+      setTimeout(() => { setIsProcessingData(false); alert("Đã dọn sạch toàn bộ dữ liệu thành công!"); }, 500);
     } catch (err: any) { 
       alert("Lỗi quá trình xóa: " + err.message); 
-      setImportLoading(false); 
+      setIsProcessingData(false); 
     }
   };
 
   // ======================================================================
-  // CHỨC NĂNG NHẬP DỮ LIỆU ĐÃ NÂNG CẤP (XỬ LÝ DỨT ĐIỂM LỖI QUAY QUAY)
+  // CHỨC NĂNG NHẬP DỮ LIỆU TỪ EXCEL (ĐÃ FIX LỖI UNDEFINED & TREO BROWSER)
   // ======================================================================
   const processCSV = async (csvText: string) => {
-    setImportLoading(true);
+    setIsProcessingData(true);
     setImportProgress(0);
-    setImportStatusText("Đang phân tích tệp dữ liệu...");
+    setImportStatusText("Đang phân tích định dạng tệp...");
     
+    // Sử dụng thuật toán chuẩn V2
     const rows = parseCSVFull(csvText);
-    if (rows.length < 2) { setImportLoading(false); return; }
+    if (rows.length < 2) { 
+      setIsProcessingData(false); 
+      alert("Tệp của bạn có vẻ rỗng hoặc không đúng định dạng CSV.");
+      return; 
+    }
 
-    const headers = rows[0].map(h => h.toLowerCase());
+    const headers = rows[0].map(h => h.toLowerCase().trim());
+    
+    // Nhận diện cột thông minh hơn (phù hợp với form xuất từ Google)
     const idx = {
-      ts: headers.findIndex(h => h.includes("dấu thời gian") || h.includes("thời gian")),
-      date: headers.findIndex(h => h.includes("ngày")),
-      agency: headers.findIndex(h => h.includes("đơn vị") || h.includes("đại lý")),
-      staff: headers.findIndex(h => h.includes("cvtv") || h.includes("cvkd")),
-      sPhone: headers.findIndex(h => h.includes("sđt cv") || h.includes("điện thoại cv")),
+      ts: headers.findIndex(h => h.includes("dấu thời gian") || h.includes("timestamp")),
+      date: headers.findIndex(h => h.includes("ngày tham quan") || h === "ngày"),
+      agency: headers.findIndex(h => h.includes("tên đơn vị") || h.includes("đại lý")),
+      staff: headers.findIndex(h => h.includes("họ và tên cv") || h.includes("họ tên cv")),
+      sPhone: headers.findIndex(h => h.includes("điện thoại cv") || h.includes("sđt cv")),
       cName: headers.findIndex(h => h.includes("tên khách")),
       cCount: headers.findIndex(h => h.includes("số lượng khách")),
-      cPhone: headers.findIndex(h => h.includes("sđt kh")),
+      cPhone: headers.findIndex(h => h.includes("điện thoại kh") || h.includes("sđt kh")),
       age: headers.findIndex(h => h.includes("tuổi")),
       sCount: headers.findIndex(h => h.includes("số lượng cv"))
     };
@@ -308,77 +321,102 @@ const App = () => {
     const dataRows = rows.slice(1);
     const total = dataRows.length;
     let validCount = 0;
+    const baseTimestamp = Date.now();
 
     try {
-      // Chia nhỏ thành các gói an toàn 100 dòng
-      const chunkSize = 100; 
+      const chunkSize = 200; 
       
       for (let i = 0; i < total; i += chunkSize) {
         const batch = writeBatch(db);
         const currentChunk = dataRows.slice(i, i + chunkSize);
         
         currentChunk.forEach((row, subIdx) => {
-          if (row.length < 3) return;
+          if (row.length < 3) return; // Bỏ qua dòng trống
 
-          const getStr = (index: number) => (index !== -1 && row[index]) ? String(row[index]).trim() : '';
-          const getNum = (index: number, def: number) => { const v = parseInt(getStr(index)); return isNaN(v) ? def : v; };
+          // Hàm lấy dữ liệu an toàn, ngăn chặn tuyệt đối lỗi "undefined" của Firebase
+          const getStr = (index: number) => (index !== -1 && row[index] !== undefined && row[index] !== null) ? String(row[index]).trim() : '';
+          const getNum = (index: number, def: number) => { 
+            const val = getStr(index); 
+            const n = parseInt(val); 
+            return isNaN(n) ? def : n; 
+          };
 
+          // --- Xử lý Ngày tháng phức tạp ---
           let dateStr = "";
-          const rawDate = getStr(idx.ts) || getStr(idx.date);
+          const rawDate = getStr(idx.date) || getStr(idx.ts);
           if (rawDate) {
+            // Hỗ trợ YYYY-MM-DD hoặc DD/MM/YYYY
             const mYMD = rawDate.match(/(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
             const mDMY = rawDate.match(/(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})/);
             if (mYMD) dateStr = `${mYMD[1]}-${mYMD[2].padStart(2, '0')}-${mYMD[3].padStart(2, '0')}`;
             else if (mDMY) dateStr = `${mDMY[3]}-${mDMY[2].padStart(2, '0')}-${mDMY[1].padStart(2, '0')}`;
           }
+          // Nếu không parse được ngày, lấy ngày hôm nay (tránh lỗi trắng biểu đồ)
+          if (!dateStr) dateStr = getLocalDateString(new Date());
 
-          if (!dateStr) return;
+          const customerCountVal = getNum(idx.cCount, 0);
 
+          // Tạo Object dữ liệu (Cam kết không có undefined)
           const docData = {
-            id: Date.now() + i + subIdx, date: dateStr, timestamp: getStr(idx.ts) || dateStr,
-            agencyName: getStr(idx.agency) || 'N/A', staffName: getStr(idx.staff) || 'N/A',
-            staffPhone: getStr(idx.sPhone).slice(-4), staffCount: getNum(idx.sCount, 1),
-            customerName: getStr(idx.cName), customerCount: getNum(idx.cCount, 0),
-            customerPhone: getStr(idx.cPhone).slice(-4), customerAge: getStr(idx.age),
-            hasCustomer: getNum(idx.cCount, 0) > 0, isImported: true
+            id: baseTimestamp + i + subIdx, 
+            date: dateStr, 
+            timestamp: getStr(idx.ts) || dateStr || '',
+            agencyName: getStr(idx.agency) || 'Không xác định', 
+            staffName: getStr(idx.staff) || 'Không xác định',
+            staffPhone: getStr(idx.sPhone).slice(-4) || 'N/A', 
+            staffCount: getNum(idx.sCount, 1),
+            customerName: getStr(idx.cName) || '', 
+            customerCount: customerCountVal,
+            customerPhone: getStr(idx.cPhone).slice(-4) || '', 
+            customerAge: getStr(idx.age) || '',
+            hasCustomer: customerCountVal > 0, 
+            isImported: true
           };
+          
           batch.set(doc(collection(db, 'artifacts', appId, 'public', 'data', 'gallery_checkins')), docData);
           validCount++;
         });
 
-        // Sử dụng Timeout bảo vệ vòng lặp
         await commitBatchWithTimeout(batch);
         
         const progress = Math.round(((i + currentChunk.length) / total) * 100);
         setImportProgress(progress > 100 ? 100 : progress);
-        setImportStatusText(`Đã nạp: ${validCount} / ${total} dòng...`);
+        setImportStatusText(`Đã nhập: ${validCount} / ${total} dòng...`);
         
-        // Nghỉ ngơi 0.5 giây
-        await new Promise(r => setTimeout(r, 500));
+        await new Promise(r => setTimeout(r, 200));
       }
 
       setImportProgress(100);
       setTimeout(() => { 
-        setImportLoading(false); 
-        alert(`Nhập thành công hoàn toàn! Đã nạp ${validCount} dòng dữ liệu.`); 
+        setIsProcessingData(false); 
+        alert(`Hoàn tất xuất sắc! Đã tải thành công ${validCount} dữ liệu vào hệ thống.`); 
         setAdminSubTab('list'); 
-      }, 500);
+      }, 600);
       
     } catch (err: any) { 
-      alert("Lỗi quá trình nhập: " + err.message); 
-      setImportLoading(false); 
+      alert("Quá trình nhập bị gián đoạn do lỗi mạng hoặc file: " + err.message); 
+      setIsProcessingData(false); 
     }
   };
 
   const handleManualSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!manualDate) return;
-    const manualData = { agencyName: 'Dữ liệu cũ', staffName: 'Nhập thủ công', staffPhone: '0000', staffCount: manualStaff, customerName: 'Khách cũ', customerPhone: '0000', customerCount: manualCustomer, customerAge: 'N/A', hasCustomer: manualCustomer > 0, id: Date.now(), date: manualDate, timestamp: manualDate, isManual: true };
-    try { await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'gallery_checkins'), manualData); alert("Thành công!"); } catch(e: any) { alert(e.message); }
+    const manualData = { 
+      id: Date.now(), date: manualDate, timestamp: manualDate, 
+      agencyName: 'Dữ liệu Bổ sung', staffName: 'Admin Nhập', staffPhone: '0000', staffCount: manualStaff, 
+      customerName: manualCustomer > 0 ? 'Khách Bổ sung' : '', customerPhone: '', customerCount: manualCustomer, customerAge: '', 
+      hasCustomer: manualCustomer > 0, isManual: true 
+    };
+    try { await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'gallery_checkins'), manualData); alert("Thêm dữ liệu thủ công thành công!"); } catch(e: any) { alert(e.message); }
   };
 
   const handleDeleteEntry = async (id: string) => {
-    if (window.confirm("Xóa dòng này?")) await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'gallery_checkins', id));
+    if (window.confirm("Bạn chắc chắn muốn xóa dòng này?")) {
+      try {
+        await writeBatch(db).delete(doc(db, 'artifacts', appId, 'public', 'data', 'gallery_checkins', id)).commit();
+      } catch (e: any) { alert("Lỗi khi xóa: " + e.message); }
+    }
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -390,43 +428,63 @@ const App = () => {
       processCSV(content);
     };
     reader.readAsText(file);
-    // Reset file input
-    e.target.value = '';
+    e.target.value = ''; // Reset input
   };
 
-  // CHART & FILTER
+  // CHART & FILTER LOGIC
   const filteredCheckIns = useMemo(() => {
-    if (importLoading) return []; 
-    return checkIns.filter(item => (filterDate ? item.date === filterDate : true) && (filterType === 'all' || (filterType === 'customer_only' ? item.hasCustomer : !item.hasCustomer)));
-  }, [checkIns, filterDate, filterType, importLoading]);
+    if (isProcessingData) return []; 
+    return checkIns.filter(item => {
+      const matchDate = filterDate ? item.date === filterDate : true;
+      let matchType = true;
+      if (filterType === 'customer_only') matchType = item.hasCustomer;
+      if (filterType === 'staff_only') matchType = !item.hasCustomer;
+      
+      let matchSearch = true;
+      if (searchQuery) {
+        const q = searchQuery.toLowerCase();
+        matchSearch = (item.staffName && item.staffName.toLowerCase().includes(q)) || 
+                      (item.agencyName && item.agencyName.toLowerCase().includes(q)) ||
+                      (item.customerName && item.customerName.toLowerCase().includes(q));
+      }
+      return matchDate && matchType && matchSearch;
+    });
+  }, [checkIns, filterDate, filterType, searchQuery, isProcessingData]);
 
+  // Thuật toán gộp dữ liệu Biểu đồ (Nhóm theo ngày)
   const chartData = useMemo(() => {
-    if (importLoading || checkIns.length === 0) return []; 
+    if (isProcessingData || checkIns.length === 0) return []; 
     const dataMap: any = {};
     const [y, m, d] = chartFocusDate.split('-').map(Number);
     const baseDate = new Date(y, m - 1, d);
     baseDate.setHours(0,0,0,0);
 
     if (chartView === 'day') {
+      // Tuần hiện tại
       const monday = new Date(baseDate); monday.setDate(baseDate.getDate() + (baseDate.getDay() === 0 ? -6 : 1 - baseDate.getDay()));
       for (let i = 0; i < 7; i++) {
         const dt = new Date(monday); dt.setDate(monday.getDate() + i);
-        const ds = getLocalDateString(dt); dataMap[ds] = { key: ds, label: `${dt.getDate()}/${dt.getMonth()+1}`, sortIndex: i, customers: 0, staff: 0 };
+        const ds = getLocalDateString(dt); 
+        dataMap[ds] = { key: ds, label: `${dt.getDate()}/${dt.getMonth()+1}`, sortIndex: i, customers: 0, staff: 0 };
         AGE_GROUPS.forEach(ag => dataMap[ds][ag] = 0);
       }
     } else if (chartView === 'week') {
+      // Tháng hiện tại (chia thành các tuần)
       const monthStart = new Date(baseDate.getFullYear(), baseDate.getMonth(), 1);
       const firstMonday = new Date(monthStart); firstMonday.setDate(monthStart.getDate() + (monthStart.getDay() === 0 ? -6 : 1 - monthStart.getDay()));
       for (let i = 0; i < 5; i++) {
         const s = new Date(firstMonday); s.setDate(firstMonday.getDate() + (i * 7));
         const e = new Date(s); e.setDate(s.getDate() + 6);
-        const k = `w-${i}`; dataMap[k] = { key: k, label: `Từ ${s.getDate()}/${s.getMonth()+1}`, sortIndex: i, customers: 0, staff: 0, sDate: new Date(s), eDate: new Date(e) };
+        const k = `w-${i}`; 
+        dataMap[k] = { key: k, label: `Từ ${s.getDate()}/${s.getMonth()+1}`, sortIndex: i, customers: 0, staff: 0, sDate: new Date(s), eDate: new Date(e) };
         AGE_GROUPS.forEach(ag => dataMap[k][ag] = 0);
       }
     } else {
+      // 6 Tháng gần nhất
       for (let i = -3; i <= 2; i++) {
         const dt = new Date(baseDate.getFullYear(), baseDate.getMonth() + i, 1);
-        const k = `${dt.getFullYear()}-${dt.getMonth() + 1}`; dataMap[k] = { key: k, label: `T${dt.getMonth() + 1}`, sortIndex: i + 3, customers: 0, staff: 0 };
+        const k = `${dt.getFullYear()}-${dt.getMonth() + 1}`; 
+        dataMap[k] = { key: k, label: `T${dt.getMonth() + 1}`, sortIndex: i + 3, customers: 0, staff: 0 };
         AGE_GROUPS.forEach(ag => dataMap[k][ag] = 0);
       }
     }
@@ -437,7 +495,12 @@ const App = () => {
       else if (chartView === 'week') {
         const idt = new Date(item.date); idt.setHours(0,0,0,0);
         bucket = Object.values(dataMap).find((b: any) => b.sDate && idt >= b.sDate && idt <= b.eDate);
-      } else bucket = dataMap[`${item.date.split('-')[0]}-${parseInt(item.date.split('-')[1])}`];
+      } else {
+        const parts = item.date.split('-');
+        if (parts.length >= 2) {
+          bucket = dataMap[`${parts[0]}-${parseInt(parts[1])}`];
+        }
+      }
 
       if (bucket) {
         bucket.customers += (item.customerCount || 0); bucket.staff += (item.staffCount || 0);
@@ -445,19 +508,26 @@ const App = () => {
       }
     });
     return Object.values(dataMap).sort((a: any, b: any) => a.sortIndex - b.sortIndex);
-  }, [checkIns, chartView, chartFocusDate, importLoading]);
+  }, [checkIns, chartView, chartFocusDate, isProcessingData]);
 
   const maxChartValue = useMemo(() => {
     if (chartData.length === 0) return 5;
-    const base = chartMetric === 'role' ? Math.max(...chartData.map((d: any) => Math.max(d.customers, d.staff))) : Math.max(...chartData.map((d: any) => AGE_GROUPS.reduce((s, ag) => s + d[ag], 0)));
-    return Math.ceil(Math.max(base, 5) * 1.3);
+    const base = chartMetric === 'role' 
+      ? Math.max(...chartData.map((d: any) => Math.max(d.customers, d.staff))) 
+      : Math.max(...chartData.map((d: any) => AGE_GROUPS.reduce((s, ag) => s + d[ag], 0)));
+    return Math.ceil(Math.max(base, 5) * 1.25);
   }, [chartData, chartMetric]);
 
   const exportToExcel = () => {
-    const headers = ['Thời gian', 'Đơn vị', 'CVKD', 'SL CVKD', 'Khách', 'SL Khách', 'Tổng'];
-    const rows = filteredCheckIns.map(item => [item.timestamp, item.agencyName, item.staffName, item.staffCount, item.hasCustomer ? item.customerName : 'N/A', item.customerCount, (item.staffCount || 0) + (item.customerCount || 0)]);
+    const headers = ['Thời gian', 'Đơn vị', 'CVKD', 'SĐT CV', 'SL CVKD', 'Khách hàng', 'SĐT Khách', 'Tuổi Khách', 'SL Khách', 'Tổng'];
+    const rows = filteredCheckIns.map(item => [
+      `"${item.timestamp}"`, `"${item.agencyName}"`, `"${item.staffName}"`, `"${item.staffPhone}"`, item.staffCount, 
+      item.hasCustomer ? `"${item.customerName}"` : 'N/A', item.hasCustomer ? `"${item.customerPhone}"` : '', item.hasCustomer ? `"${item.customerAge}"` : '', item.customerCount, 
+      (item.staffCount || 0) + (item.customerCount || 0)
+    ]);
     const csv = "\ufeff" + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
-    const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); link.download = `Gallery_CheckIn.csv`; link.click();
+    const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' })); 
+    link.download = `DuLieu_CheckIn_${new Date().toLocaleDateString('vi-VN').replace(/\//g,'-')}.csv`; link.click();
   };
 
   const handleGoogleLogin = async () => {
@@ -471,21 +541,27 @@ const App = () => {
     <div className="min-h-screen bg-slate-100 pb-12" style={{ fontFamily: "'Be Vietnam Pro', sans-serif" }}>
       <style dangerouslySetInnerHTML={{__html: `@import url('https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&display=swap');`}} />
 
-      {/* MODAL TRẠNG THÁI */}
-      {importLoading && (
-        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/80 backdrop-blur-xl animate-in fade-in">
-          <div className="bg-white p-10 rounded-[40px] shadow-2xl w-96 text-center">
-             <div className="w-20 h-20 border-8 border-orange-50 border-t-[#ea580c] rounded-full animate-spin mx-auto mb-6 flex items-center justify-center">
-               <Loader2 className="text-[#ea580c] animate-spin absolute w-8 h-8 opacity-50" />
+      {/* OVERLAY LOADING BẢO VỆ GIAO DIỆN */}
+      {isProcessingData && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/80 backdrop-blur-md animate-in fade-in">
+          <div className="bg-white p-10 rounded-[2rem] shadow-2xl w-[28rem] max-w-[90%] text-center border border-orange-100 relative overflow-hidden">
+             <div className="absolute top-0 left-0 w-full h-2 bg-slate-100">
+               <div className="h-full bg-gradient-to-r from-orange-400 to-orange-600 transition-all duration-300" style={{ width: `${importProgress}%` }}></div>
              </div>
-             <h3 className="font-extrabold text-2xl text-slate-800 mb-2">Đang xử lý...</h3>
-             <p className="text-sm text-slate-500 mb-5">Hệ thống đang chạy gói nhỏ (100 dòng) để đảm bảo mạng không nghẽn.</p>
-             <div className="w-full bg-slate-100 h-4 rounded-full overflow-hidden mb-4 shadow-inner">
-                <div className="bg-gradient-to-r from-orange-500 to-orange-400 h-full transition-all duration-300" style={{ width: `${importProgress}%` }}></div>
+             <div className="w-20 h-20 bg-orange-50 rounded-full flex items-center justify-center mx-auto mb-6 relative">
+               <Loader2 className="text-[#ea580c] animate-spin absolute w-10 h-10" />
+               <Upload className="text-orange-300 w-5 h-5 absolute" />
              </div>
-             <div className="flex justify-between items-center mb-2">
-                <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">{importStatusText}</span>
-                <span className="text-lg font-black text-[#ea580c]">{importProgress}%</span>
+             <h3 className="font-extrabold text-2xl text-slate-800 mb-2">Đang đồng bộ dữ liệu</h3>
+             <p className="text-sm font-medium text-slate-500 mb-6">Vui lòng giữ nguyên cửa sổ này để hệ thống<br/>tối ưu hóa dữ liệu vào Cloud.</p>
+             <div className="bg-slate-50 rounded-xl p-4 border border-slate-100">
+                <div className="flex justify-between items-center mb-1.5">
+                  <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">{importStatusText}</span>
+                  <span className="text-sm font-black text-[#ea580c]">{importProgress}%</span>
+                </div>
+                <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
+                  <div className="bg-[#ea580c] h-full transition-all duration-300" style={{ width: `${importProgress}%` }}></div>
+                </div>
              </div>
           </div>
         </div>
@@ -499,7 +575,7 @@ const App = () => {
 
       <main className="max-w-5xl mx-auto px-4 py-6">
         {activeTab === 'checkin' && (
-          <div className="max-w-4xl mx-auto"><div className="bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-100"><div className="w-full h-48 sm:h-72 bg-cover bg-center relative flex items-center justify-center px-4" style={{ backgroundImage: `url('${BANNER_IMAGE_URL}')` }}><div className="absolute inset-0 bg-black/55"></div><div className="relative z-10 text-center"><h2 className="text-2xl sm:text-4xl font-extrabold uppercase text-white">CHECK IN GALLERY</h2></div></div><form onSubmit={handleSubmit} className="p-6 md:p-8 space-y-8"><div className="bg-slate-50 p-6 rounded-xl border border-slate-100"><h3 className="text-base font-bold text-slate-800 uppercase mb-5 flex items-center"><span className="bg-[#ea580c] text-white p-1.5 rounded-md mr-3"><Building2 size={18} /></span> Thông tin CVKD</h3><div className="grid grid-cols-1 md:grid-cols-2 gap-6"><div className="space-y-2"><label className="text-sm font-semibold text-slate-700">Tên đơn vị</label><input type="text" name="agencyName" required value={formData.agencyName} onChange={handleInputChange} className="w-full px-4 py-3 border rounded-lg" /></div><div className="space-y-2"><label className="text-sm font-semibold text-slate-700">Họ và Tên CVKD</label><input type="text" name="staffName" required value={formData.staffName} onChange={handleInputChange} className="w-full px-4 py-3 border rounded-lg" /></div><div className="space-y-2"><label className="text-sm font-semibold text-slate-700">SĐT CVKD (4 số cuối)</label><input type="text" name="staffPhone" required minLength={4} value={formData.staffPhone} onChange={handleInputChange} className="w-full px-4 py-3 border rounded-lg" /></div><div className="space-y-2"><label className="text-sm font-semibold text-slate-700">Số lượng CVKD đi cùng</label><input type="number" name="staffCount" required min="1" value={formData.staffCount} onChange={handleInputChange} className="w-full px-4 py-3 border rounded-lg" /></div></div><div className="mt-6 pt-5 border-t"><label className="flex items-center space-x-3 cursor-pointer group"><input type="checkbox" checked={!hasCustomer} onChange={() => setHasCustomer(!hasCustomer)} className="w-5 h-5 accent-[#ea580c]" /><span className="text-slate-700 font-semibold group-hover:text-[#ea580c]">Tôi không đi cùng khách hàng</span></label></div></div>{hasCustomer && (<div className="bg-orange-50/50 p-6 rounded-xl border border-orange-100 animate-in fade-in slide-in-from-top-4"><h3 className="text-base font-bold text-[#c2410c] uppercase mb-5 flex items-center"><span className="bg-[#fdba74] text-orange-900 p-1.5 rounded-md mr-3"><Users size={18} /></span> Thông tin Khách Hàng</h3><div className="grid grid-cols-1 md:grid-cols-2 gap-6"><div className="space-y-2"><label className="text-sm font-semibold text-slate-700">Tên Khách Hàng</label><input type="text" name="customerName" required={hasCustomer} value={formData.customerName} onChange={handleInputChange} className="w-full px-4 py-3 border rounded-lg" /></div><div className="space-y-2"><label className="text-sm font-semibold text-slate-700">SĐT Khách (4 số cuối)</label><input type="text" name="customerPhone" required={hasCustomer} minLength={4} value={formData.customerPhone} onChange={handleInputChange} className="w-full px-4 py-3 border rounded-lg" /></div><div className="space-y-2"><label className="text-sm font-semibold text-slate-700">Số lượng Khách</label><input type="number" name="customerCount" required={hasCustomer} min="1" value={formData.customerCount} onChange={handleInputChange} className="w-full px-4 py-3 border rounded-lg" /></div><div className="space-y-2"><label className="text-sm font-semibold text-slate-700">Độ tuổi Khách</label><select name="customerAge" required={hasCustomer} value={formData.customerAge} onChange={handleInputChange} className="w-full px-4 py-3 border rounded-lg bg-white"><option value="" disabled>Chọn khoảng tuổi</option><option value="Dưới 25">Dưới 25</option><option value="25-35">25-35</option><option value="36-45">36-45</option><option value="46-55">46-55</option><option value="Trên 55">Trên 55</option></select></div></div></div>)}<button type="submit" disabled={!isFormValid} className={`px-10 py-4 font-bold text-lg rounded-xl shadow-lg transition-all flex items-center justify-center space-x-2 ${isFormValid ? 'bg-[#ea580c] text-white hover:bg-[#c2410c]' : 'bg-slate-300 text-slate-500'}`}><CheckCircle2 size={24} /> <span>Gửi Đăng Ký</span></button></form></div></div>
+          <div className="max-w-4xl mx-auto"><div className="bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-100"><div className="w-full h-48 sm:h-72 bg-cover bg-center relative flex items-center justify-center px-4" style={{ backgroundImage: `url('${BANNER_IMAGE_URL}')` }}><div className="absolute inset-0 bg-black/55"></div><div className="relative z-10 text-center"><h2 className="text-2xl sm:text-4xl font-extrabold uppercase text-white">CHECK IN GALLERY</h2></div></div><form onSubmit={handleSubmit} className="p-6 md:p-8 space-y-8"><div className="bg-slate-50 p-6 rounded-xl border border-slate-100"><h3 className="text-base font-bold text-slate-800 uppercase mb-5 flex items-center"><span className="bg-[#ea580c] text-white p-1.5 rounded-md mr-3"><Building2 size={18} /></span> Thông tin CVKD</h3><div className="grid grid-cols-1 md:grid-cols-2 gap-6"><div className="space-y-2"><label className="text-sm font-semibold text-slate-700">Tên đơn vị</label><input type="text" name="agencyName" required value={formData.agencyName} onChange={handleInputChange} className="w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-orange-400 outline-none" /></div><div className="space-y-2"><label className="text-sm font-semibold text-slate-700">Họ và Tên CVKD</label><input type="text" name="staffName" required value={formData.staffName} onChange={handleInputChange} className="w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-orange-400 outline-none" /></div><div className="space-y-2"><label className="text-sm font-semibold text-slate-700">SĐT CVKD (4 số cuối)</label><input type="text" name="staffPhone" required minLength={4} maxLength={4} value={formData.staffPhone} onChange={handleInputChange} className="w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-orange-400 outline-none" /></div><div className="space-y-2"><label className="text-sm font-semibold text-slate-700">Số lượng CVKD đi cùng</label><input type="number" name="staffCount" required min="1" value={formData.staffCount} onChange={handleInputChange} className="w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-orange-400 outline-none" /></div></div><div className="mt-6 pt-5 border-t border-slate-200"><label className="flex items-center space-x-3 cursor-pointer group"><input type="checkbox" checked={!hasCustomer} onChange={() => setHasCustomer(!hasCustomer)} className="w-5 h-5 accent-[#ea580c] cursor-pointer" /><span className="text-slate-700 font-semibold group-hover:text-[#ea580c] select-none">Tôi không đi cùng khách hàng</span></label></div></div>{hasCustomer && (<div className="bg-orange-50/50 p-6 rounded-xl border border-orange-100 animate-in fade-in slide-in-from-top-4"><h3 className="text-base font-bold text-[#c2410c] uppercase mb-5 flex items-center"><span className="bg-[#fdba74] text-orange-900 p-1.5 rounded-md mr-3"><Users size={18} /></span> Thông tin Khách Hàng</h3><div className="grid grid-cols-1 md:grid-cols-2 gap-6"><div className="space-y-2"><label className="text-sm font-semibold text-slate-700">Tên Khách Hàng</label><input type="text" name="customerName" required={hasCustomer} value={formData.customerName} onChange={handleInputChange} className="w-full px-4 py-3 border border-orange-200 rounded-lg focus:ring-2 focus:ring-orange-400 outline-none" /></div><div className="space-y-2"><label className="text-sm font-semibold text-slate-700">SĐT Khách (4 số cuối)</label><input type="text" name="customerPhone" required={hasCustomer} minLength={4} maxLength={4} value={formData.customerPhone} onChange={handleInputChange} className="w-full px-4 py-3 border border-orange-200 rounded-lg focus:ring-2 focus:ring-orange-400 outline-none" /></div><div className="space-y-2"><label className="text-sm font-semibold text-slate-700">Số lượng Khách</label><input type="number" name="customerCount" required={hasCustomer} min="1" value={formData.customerCount} onChange={handleInputChange} className="w-full px-4 py-3 border border-orange-200 rounded-lg focus:ring-2 focus:ring-orange-400 outline-none" /></div><div className="space-y-2"><label className="text-sm font-semibold text-slate-700">Độ tuổi Khách</label><select name="customerAge" required={hasCustomer} value={formData.customerAge} onChange={handleInputChange} className="w-full px-4 py-3 border border-orange-200 rounded-lg bg-white focus:ring-2 focus:ring-orange-400 outline-none font-medium"><option value="" disabled>Chọn khoảng tuổi</option><option value="Dưới 25">Dưới 25</option><option value="25-35">25 - 35</option><option value="36-45">36 - 45</option><option value="46-55">46 - 55</option><option value="Trên 55">Trên 55</option></select></div></div></div>)}<button type="submit" disabled={!isFormValid} className={`px-10 py-4 font-bold text-lg rounded-xl shadow-lg transition-all flex items-center justify-center space-x-2 w-full sm:w-auto ${isFormValid ? 'bg-[#ea580c] text-white hover:bg-[#c2410c] hover:-translate-y-1' : 'bg-slate-300 text-slate-500 opacity-70 cursor-not-allowed'}`}><CheckCircle2 size={24} /> <span>Xác nhận Đăng Ký</span></button></form></div></div>
         )}
 
         {activeTab === 'admin' && (
@@ -508,28 +584,28 @@ const App = () => {
               <div className="flex flex-col items-center justify-center p-12 h-[500px]"><div className="bg-slate-100 p-4 rounded-full mb-6 text-slate-500"><Lock size={48} /></div><h2 className="text-2xl font-bold text-slate-900 mb-8">Admin Dashboard</h2><button onClick={handleGoogleLogin} className="px-6 py-3 bg-white border shadow-md rounded-lg flex items-center space-x-3 hover:bg-slate-50 transition-all font-bold"><svg className="w-5 h-5" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" /><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" /><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" /><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" /></svg><span>Đăng nhập với Google</span></button>{adminError && <p className="text-red-500 mt-4 text-sm">{adminError}</p>}</div>
             ) : (
               <div className="flex flex-col h-full">
-                <div className="p-4 bg-slate-900 text-white flex flex-col sm:flex-row justify-between items-center gap-4"><div className="flex items-center space-x-2 font-bold"><ShieldCheck size={20} className="text-orange-400" /> <span>ADMIN AREA</span></div><div className="flex bg-slate-800 p-1 rounded-lg w-full sm:w-auto overflow-x-auto text-center"><button onClick={() => setAdminSubTab('list')} className={`flex-1 px-4 py-1.5 text-sm font-semibold rounded-md ${adminSubTab === 'list' ? 'bg-[#ea580c]' : ''}`}>Danh sách</button><button onClick={() => setAdminSubTab('chart')} className={`flex-1 px-4 py-1.5 text-sm font-semibold rounded-md ${adminSubTab === 'chart' ? 'bg-[#ea580c]' : ''}`}>Thống kê</button>{adminEmail === ROOT_ADMIN_EMAIL && <button onClick={() => setAdminSubTab('settings')} className={`flex-1 px-4 py-1.5 text-sm font-semibold rounded-md ${adminSubTab === 'settings' ? 'bg-[#ea580c]' : ''}`}>Hệ thống</button>}</div></div>
+                <div className="p-4 bg-slate-900 text-white flex flex-col sm:flex-row justify-between items-center gap-4"><div className="flex items-center space-x-2 font-bold"><ShieldCheck size={20} className="text-orange-400" /> <span>ADMIN AREA</span></div><div className="flex bg-slate-800 p-1 rounded-lg w-full sm:w-auto overflow-x-auto text-center"><button onClick={() => setAdminSubTab('list')} className={`flex-1 px-4 py-1.5 text-sm font-semibold rounded-md ${adminSubTab === 'list' ? 'bg-[#ea580c]' : 'hover:bg-slate-700'}`}>Danh sách</button><button onClick={() => setAdminSubTab('chart')} className={`flex-1 px-4 py-1.5 text-sm font-semibold rounded-md ${adminSubTab === 'chart' ? 'bg-[#ea580c]' : 'hover:bg-slate-700'}`}>Thống kê</button>{adminEmail === ROOT_ADMIN_EMAIL && <button onClick={() => setAdminSubTab('settings')} className={`flex-1 px-4 py-1.5 text-sm font-semibold rounded-md ${adminSubTab === 'settings' ? 'bg-[#ea580c]' : 'hover:bg-slate-700'}`}>Hệ thống</button>}</div></div>
 
                 <div className="p-6 bg-slate-50 flex-1 overflow-auto">
-                  {!importLoading ? (
-                    <>
                     {adminSubTab === 'list' && (
-                      <div className="bg-white rounded-xl shadow-sm border overflow-hidden animate-in fade-in"><div className="flex flex-col lg:flex-row justify-between p-4 border-b bg-slate-50 gap-4"><h3 className="font-bold flex items-center text-slate-800">Lịch sử Đăng ký <span className="ml-2 bg-orange-100 text-orange-800 px-3 py-1 rounded-full text-xs font-bold">{filteredCheckIns.length} lượt</span></h3><div className="flex flex-wrap items-center gap-3"><button onClick={exportToExcel} className="px-4 py-2 bg-emerald-600 text-white text-xs rounded-md flex items-center font-bold shadow-sm hover:bg-emerald-700"><Download size={14} className="mr-1"/> Excel</button><select value={filterType} onChange={(e) => setFilterType(e.target.value)} className="px-3 py-2 text-xs border rounded-md shadow-sm outline-none"><option value="all">Tất cả</option><option value="customer_only">Có khách</option><option value="staff_only">Nội bộ</option></select><input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)} className="px-3 py-2 text-xs border rounded-md shadow-sm outline-none" /></div></div><div className="overflow-x-auto"><table className="w-full text-sm text-left"><thead className="bg-slate-100 font-bold border-b text-slate-600"><tr><th className="p-4">Thời gian</th><th className="p-4">CVKD / Đơn vị</th><th className="p-4">Khách hàng</th><th className="p-4 text-center">SL CVKD</th><th className="p-4 text-center">SL Khách</th><th className="p-4 text-center">Tổng</th><th className="p-4"></th></tr></thead><tbody>{filteredCheckIns.length === 0 ? (<tr><td colSpan={7} className="p-12 text-center text-slate-400 italic">Không tìm thấy dữ liệu</td></tr>) : (filteredCheckIns.map((item: any) => (<tr key={item.firebaseId || item.id} className="border-b hover:bg-slate-50 transition-colors"><td className="p-4 text-xs font-medium text-slate-500">{item.timestamp}</td><td className="p-4"><div className="font-bold text-slate-900">{item.staffName}</div><div className="text-[#ea580c] text-xs font-medium">{item.agencyName}</div></td><td className="p-4">{item.hasCustomer ? (<div><div className="font-bold text-slate-900">{item.customerName}</div><div className="text-xs text-slate-500">Tuổi: {item.customerAge}</div></div>) : (<span className="text-slate-300 italic text-xs bg-slate-50 px-2 py-0.5 rounded">Nội bộ</span>)}</td><td className="p-4 text-center font-semibold text-slate-700">{item.staffCount}</td><td className="p-4 text-center font-semibold text-orange-600">{item.customerCount}</td><td className="p-4 text-center font-extrabold text-[#ea580c]">{(item.staffCount || 0) + (item.customerCount || 0)}</td><td className="p-4 text-right">{adminEmail === ROOT_ADMIN_EMAIL && (<button onClick={() => handleDeleteEntry(item.firebaseId || item.id)} className="text-slate-300 hover:text-red-500"><Trash2 size={16}/></button>)}</td></tr>)))}</tbody></table></div></div>
+                      <div className="bg-white rounded-xl shadow-sm border overflow-hidden animate-in fade-in"><div className="flex flex-col lg:flex-row justify-between p-4 border-b bg-slate-50 gap-4"><h3 className="font-bold flex items-center text-slate-800">Lịch sử Đăng ký <span className="ml-2 bg-orange-100 text-orange-800 px-3 py-1 rounded-full text-xs font-bold">{filteredCheckIns.length} lượt</span></h3><div className="flex flex-wrap items-center gap-3">
+                        <div className="relative">
+                          <div className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-slate-400"><Search size={14}/></div>
+                          <input type="text" placeholder="Tìm tên, đơn vị..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="pl-8 pr-3 py-2 text-xs border rounded-md shadow-sm outline-none focus:ring-1 focus:ring-orange-400 w-full sm:w-40" />
+                        </div>
+                        <input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)} className="px-3 py-2 text-xs border rounded-md shadow-sm outline-none text-slate-600" />
+                        <select value={filterType} onChange={(e) => setFilterType(e.target.value)} className="px-3 py-2 text-xs border rounded-md shadow-sm outline-none text-slate-600"><option value="all">Tất cả</option><option value="customer_only">Có khách</option><option value="staff_only">Nội bộ</option></select>
+                        <button onClick={exportToExcel} className="px-4 py-2 bg-emerald-600 text-white text-xs rounded-md flex items-center font-bold shadow-sm hover:bg-emerald-700"><Download size={14} className="mr-1"/> Excel</button>
+                      </div></div><div className="overflow-x-auto min-h-[400px]"><table className="w-full text-sm text-left"><thead className="bg-slate-100 font-bold border-b text-slate-600"><tr><th className="p-4">Thời gian</th><th className="p-4">CVKD / Đơn vị</th><th className="p-4">Khách hàng</th><th className="p-4 text-center">SL CVKD</th><th className="p-4 text-center">SL Khách</th><th className="p-4 text-center">Tổng</th><th className="p-4"></th></tr></thead><tbody>{filteredCheckIns.length === 0 ? (<tr><td colSpan={7} className="p-12 text-center text-slate-400 italic">Không tìm thấy dữ liệu</td></tr>) : (filteredCheckIns.map((item: any) => (<tr key={item.firebaseId || item.id} className="border-b hover:bg-slate-50 transition-colors"><td className="p-4 text-xs font-medium text-slate-500">{item.timestamp}</td><td className="p-4"><div className="font-bold text-slate-900">{item.staffName} <span className="text-slate-400 font-normal ml-1">({item.staffPhone})</span></div><div className="text-[#ea580c] text-xs font-medium mt-0.5">{item.agencyName}</div></td><td className="p-4">{item.hasCustomer ? (<div><div className="font-bold text-slate-900">{item.customerName} <span className="text-slate-400 font-normal ml-1">({item.customerPhone})</span></div><div className="text-xs text-slate-500 mt-0.5">Tuổi: {item.customerAge}</div></div>) : (<span className="text-slate-400 italic text-xs bg-slate-100 px-2 py-0.5 rounded border">Nội bộ</span>)}</td><td className="p-4 text-center font-semibold text-slate-700">{item.staffCount}</td><td className="p-4 text-center font-semibold text-orange-600">{item.customerCount}</td><td className="p-4 text-center font-extrabold text-[#ea580c]">{(item.staffCount || 0) + (item.customerCount || 0)}</td><td className="p-4 text-right">{adminEmail === ROOT_ADMIN_EMAIL && (<button onClick={() => handleDeleteEntry(item.firebaseId || item.id)} className="text-slate-300 hover:text-red-500 p-1"><Trash2 size={16}/></button>)}</td></tr>)))}</tbody></table></div></div>
                     )}
 
                     {adminSubTab === 'chart' && (
-                      <div className="bg-white p-6 rounded-xl shadow-sm border animate-in fade-in"><div className="flex flex-col xl:flex-row justify-between items-start xl:items-center mb-8 gap-4"><div className="flex items-center space-x-3"><BarChart3 size={24} className="text-[#ea580c]" /><div><h3 className="font-bold text-lg text-slate-800">Thống kê lưu lượng</h3></div></div><div className="flex flex-wrap items-center gap-3 w-full xl:w-auto"><div className="flex bg-slate-100 p-1 rounded-lg mr-2 border"><button onClick={() => setChartMetric('role')} className={`px-3 py-1.5 text-xs font-bold rounded-md ${chartMetric === 'role' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Theo Vai trò</button><button onClick={() => setChartMetric('age')} className={`px-3 py-1.5 text-xs font-bold rounded-md ${chartMetric === 'age' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Theo Độ tuổi</button></div><div className="flex items-center space-x-2 bg-slate-100 p-1.5 rounded-lg border"><button onClick={() => { const d = new Date(chartFocusDate); d.setDate(d.getDate() - (chartView === 'day' ? 7 : 30)); setChartFocusDate(getLocalDateString(d)); }} className="p-1 hover:bg-white rounded shadow-sm"><ChevronLeft size={16} /></button><input type="date" value={chartFocusDate} onChange={(e) => setChartFocusDate(e.target.value)} className="bg-transparent text-xs font-bold outline-none border-none w-28 text-center" /><button onClick={() => { const d = new Date(chartFocusDate); d.setDate(d.getDate() + (chartView === 'day' ? 7 : 30)); setChartFocusDate(getLocalDateString(d)); }} className="p-1 hover:bg-white rounded shadow-sm"><ChevronRight size={16} /></button></div><div className="flex bg-slate-100 p-1 rounded-lg border">{['day', 'week', 'month'].map((v: any) => (<button key={v} onClick={() => setChartView(v)} className={`px-4 py-1.5 text-xs font-bold rounded-md ${chartView === v ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500'}`}>{v === 'day' ? 'Tuần' : v === 'week' ? 'Tháng' : 'Năm'}</button>))}</div></div></div><div id="admin-chart-container" className="bg-slate-900 rounded-2xl pt-12 pr-6 pb-2 pl-2 border border-slate-800 shadow-inner relative overflow-hidden"><div className="absolute top-6 right-6 flex flex-wrap justify-end gap-3 text-[10px] font-bold z-20 bg-slate-800/80 px-3 py-1.5 rounded-lg border border-slate-700/50 backdrop-blur-sm">{chartMetric === 'role' ? (<><div className="flex items-center space-x-1.5 text-orange-400"><div className="w-2.5 h-2.5 bg-orange-500 rounded-sm"></div><span>Khách</span></div><div className="flex items-center space-x-1.5 text-cyan-400"><div className="w-2.5 h-2.5 bg-cyan-500 rounded-sm"></div><span>CVKD</span></div></>) : (AGE_GROUPS.map(ag => (<div key={ag} className="flex items-center space-x-1.5 text-slate-200"><div className={`w-2.5 h-2.5 rounded-sm ${AGE_COLORS[ag]}`}></div><span>{ag}</span></div>)))}</div><div className="h-80 flex relative pl-16 pr-4 pb-12 pt-12"><div className="absolute top-0 left-4 text-cyan-500 font-bold text-[10px] uppercase opacity-60">Số lượng</div><div className="absolute top-12 bottom-12 left-0 w-14 flex flex-col justify-between items-end pr-2 pointer-events-none">{[maxChartValue, Math.ceil(maxChartValue * 0.75), Math.ceil(maxChartValue * 0.5), Math.ceil(maxChartValue * 0.25), 0].map((val: number, idx: number) => (<span key={idx} className="text-[10px] text-slate-400 font-bold leading-none translate-y-1/2">{val}</span>))}</div><div className="flex-1 relative border-l-[3px] border-b-[3px] border-slate-400"><div className="absolute inset-0 flex flex-col justify-between pointer-events-none">{[0, 1, 2, 3, 4].map((_: number, idx: number) => (<div key={idx} className="w-full border-t border-slate-500/40 border-dashed"></div>))}</div><div className="absolute inset-0 flex items-end justify-around">{chartData.map((d: any) => { const st = AGE_GROUPS.reduce((s, ag) => s + d[ag], 0); return (<div key={d.key} className="flex flex-col items-center flex-1 h-full relative group justify-end pb-[1px]">{chartMetric === 'role' ? (<div className="flex items-end justify-center space-x-1 sm:space-x-2 w-full h-full relative z-10"><div style={{ height: `${d.customers === 0 ? 0 : Math.max((d.customers / maxChartValue) * 100, 4)}%` }} className="w-full max-w-[28px] bg-gradient-to-t from-orange-600 to-orange-400 rounded-t-sm relative transition-all group-hover:brightness-125">{d.customers > 0 && <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[10px] font-bold text-orange-400">{d.customers}</span>}</div><div style={{ height: `${d.staff === 0 ? 0 : Math.max((d.staff / maxChartValue) * 100, 4)}%` }} className="w-full max-w-[28px] bg-gradient-to-t from-cyan-600 to-cyan-400 rounded-t-sm relative transition-all group-hover:brightness-125">{d.staff > 0 && <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[10px] font-bold text-cyan-400">{d.staff}</span>}</div></div>) : (<div className="flex flex-col-reverse items-center justify-start w-full h-full relative z-10 max-w-[32px]">{AGE_GROUPS.map(ag => { const v = d[ag]; if (v === 0) return null; const hp = (v / maxChartValue) * 100; return (<div key={ag} style={{ height: `${hp}%` }} className={`w-full ${AGE_COLORS[ag]} relative border-t border-slate-900/30 transition-all flex items-center justify-center min-h-[4px]`}>{hp > 8 && <span className="text-[10px] font-bold text-slate-900">{v}</span>}</div>) })} {st > 0 && <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[10px] font-bold text-slate-300">{st}</span>}</div>)}<span className="absolute -bottom-8 text-[9px] font-bold text-slate-400 text-center w-full whitespace-pre-wrap">{d.label}</span></div>) })}</div></div></div></div></div>
+                      <div className="bg-white p-6 rounded-xl shadow-sm border animate-in fade-in"><div className="flex flex-col xl:flex-row justify-between items-start xl:items-center mb-8 gap-4"><div className="flex items-center space-x-3"><BarChart3 size={24} className="text-[#ea580c]" /><div><h3 className="font-bold text-lg text-slate-800">Thống kê lưu lượng</h3></div></div><div className="flex flex-wrap items-center gap-3 w-full xl:w-auto"><div className="flex bg-slate-100 p-1 rounded-lg mr-2 border"><button onClick={() => setChartMetric('role')} className={`px-3 py-1.5 text-xs font-bold rounded-md ${chartMetric === 'role' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Theo Vai trò</button><button onClick={() => setChartMetric('age')} className={`px-3 py-1.5 text-xs font-bold rounded-md ${chartMetric === 'age' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Theo Độ tuổi</button></div><div className="flex items-center space-x-2 bg-slate-100 p-1.5 rounded-lg border"><button onClick={() => { const d = new Date(chartFocusDate); d.setDate(d.getDate() - (chartView === 'day' ? 7 : 30)); setChartFocusDate(getLocalDateString(d)); }} className="p-1 hover:bg-white rounded shadow-sm"><ChevronLeft size={16} /></button><input type="date" value={chartFocusDate} onChange={(e) => setChartFocusDate(e.target.value)} className="bg-transparent text-xs font-bold outline-none border-none w-28 text-center" /><button onClick={() => { const d = new Date(chartFocusDate); d.setDate(d.getDate() + (chartView === 'day' ? 7 : 30)); setChartFocusDate(getLocalDateString(d)); }} className="p-1 hover:bg-white rounded shadow-sm"><ChevronRight size={16} /></button></div><div className="flex bg-slate-100 p-1 rounded-lg border">{['day', 'week', 'month'].map((v: any) => (<button key={v} onClick={() => setChartView(v)} className={`px-4 py-1.5 text-xs font-bold rounded-md ${chartView === v ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500'}`}>{v === 'day' ? 'Tuần' : v === 'week' ? 'Tháng' : 'Năm'}</button>))}</div></div></div><div id="admin-chart-container" className="bg-slate-900 rounded-2xl pt-12 pr-6 pb-2 pl-2 border border-slate-800 shadow-inner relative overflow-hidden"><div className="absolute top-6 right-6 flex flex-wrap justify-end gap-3 text-[10px] font-bold z-20 bg-slate-800/80 px-3 py-1.5 rounded-lg border border-slate-700/50 backdrop-blur-sm">{chartMetric === 'role' ? (<><div className="flex items-center space-x-1.5 text-orange-400"><div className="w-2.5 h-2.5 bg-orange-500 rounded-sm shadow-[0_0_8px_rgba(234,88,12,0.8)]"></div><span>Khách</span></div><div className="flex items-center space-x-1.5 text-cyan-400"><div className="w-2.5 h-2.5 bg-cyan-500 rounded-sm shadow-[0_0_8px_rgba(6,182,212,0.8)]"></div><span>CVKD</span></div></>) : (AGE_GROUPS.map(ag => (<div key={ag} className="flex items-center space-x-1.5 text-slate-200"><div className={`w-2.5 h-2.5 rounded-sm ${AGE_COLORS[ag]}`}></div><span>{ag}</span></div>)))}</div><div className="h-80 flex relative pl-16 pr-4 pb-12 pt-12"><div className="absolute top-0 left-4 text-cyan-500 font-bold text-[10px] uppercase opacity-60 tracking-widest">Số lượng</div><div className="absolute top-12 bottom-12 left-0 w-14 flex flex-col justify-between items-end pr-2 pointer-events-none">{[maxChartValue, Math.ceil(maxChartValue * 0.75), Math.ceil(maxChartValue * 0.5), Math.ceil(maxChartValue * 0.25), 0].map((val: number, idx: number) => (<span key={idx} className="text-[10px] text-slate-400 font-bold leading-none translate-y-1/2">{val}</span>))}</div><div className="flex-1 relative border-l-[3px] border-b-[3px] border-slate-600 shadow-[0_0_15px_rgba(71,85,105,0.3)]"><div className="absolute inset-0 flex flex-col justify-between pointer-events-none">{[0, 1, 2, 3, 4].map((_: number, idx: number) => (<div key={idx} className="w-full border-t border-slate-700/40 border-dashed"></div>))}</div><div className="absolute inset-0 flex items-end justify-around">{chartData.map((d: any) => { const st = AGE_GROUPS.reduce((s, ag) => s + d[ag], 0); return (<div key={d.key} className="flex flex-col items-center flex-1 h-full relative group justify-end pb-[1px]">{chartMetric === 'role' ? (<div className="flex items-end justify-center space-x-1 sm:space-x-2 w-full h-full relative z-10"><div style={{ height: `${d.customers === 0 ? 0 : Math.max((d.customers / maxChartValue) * 100, 3)}%` }} className="w-full max-w-[28px] bg-gradient-to-t from-orange-600 to-orange-400 rounded-t-sm relative transition-all group-hover:brightness-125 shadow-[0_0_8px_rgba(234,88,12,0.4)]">{d.customers > 0 && <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[10px] font-bold text-orange-400">{d.customers}</span>}</div><div style={{ height: `${d.staff === 0 ? 0 : Math.max((d.staff / maxChartValue) * 100, 3)}%` }} className="w-full max-w-[28px] bg-gradient-to-t from-cyan-600 to-cyan-400 rounded-t-sm relative transition-all group-hover:brightness-125 shadow-[0_0_8px_rgba(6,182,212,0.4)]">{d.staff > 0 && <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[10px] font-bold text-cyan-400">{d.staff}</span>}</div></div>) : (<div className="flex flex-col-reverse items-center justify-start w-full h-full relative z-10 max-w-[32px]">{AGE_GROUPS.map(ag => { const v = d[ag]; if (v === 0) return null; const hp = (v / maxChartValue) * 100; return (<div key={ag} style={{ height: `${hp}%` }} className={`w-full ${AGE_COLORS[ag]} relative border-t border-slate-900/30 transition-all flex items-center justify-center min-h-[4px]`}>{hp > 6 && <span className="text-[9px] font-bold text-slate-900">{v}</span>}</div>) })} {st > 0 && <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[10px] font-bold text-slate-300">{st}</span>}</div>)}<span className="absolute -bottom-8 text-[9px] font-bold text-slate-400 text-center w-full whitespace-nowrap overflow-hidden text-ellipsis">{d.label}</span></div>) })}</div></div></div></div></div>
                     )}
 
                     {adminSubTab === 'settings' && adminEmail === ROOT_ADMIN_EMAIL && (
-                      <div className="animate-in fade-in grid grid-cols-1 lg:grid-cols-2 gap-6"><div className="space-y-6"><div className="bg-white p-6 rounded-xl border shadow-sm"><div className="flex items-center space-x-3 mb-6 text-slate-800"><Settings size={20} className="text-slate-500" /><h3 className="font-bold text-lg">Phân quyền Admin</h3></div><form onSubmit={e => { e.preventDefault(); if (newAdminEmail && !adminList.includes(newAdminEmail)) { setAdminList([...adminList, newAdminEmail]); setNewAdminEmail(''); } }} className="flex gap-2 mb-6"><input type="email" required value={newAdminEmail} onChange={e => setNewAdminEmail(e.target.value)} placeholder="Email admin mới..." className="flex-1 px-4 py-2 border rounded-lg text-sm outline-none focus:ring-2" /><button type="submit" className="bg-slate-800 text-white px-4 py-2 rounded-lg"><Plus size={16}/></button></form><div className="space-y-2">{adminList.map((email: string) => (<div key={email} className="flex justify-between items-center p-3 bg-slate-50 rounded-lg border"><div className="flex items-center space-x-3"><div className="w-6 h-6 bg-white border rounded-full flex items-center justify-center text-slate-400"><UserIcon size={12} /></div><span className="text-sm font-bold text-slate-700">{email}</span></div>{email !== ROOT_ADMIN_EMAIL && (<button onClick={() => setAdminList(adminList.filter((e: string) => e !== email))} className="text-slate-300 hover:text-red-500 p-1.5 transition-colors"><Trash2 size={16}/></button>)}{email === ROOT_ADMIN_EMAIL && <span className="text-[9px] font-extrabold text-slate-400 uppercase tracking-widest bg-slate-100 px-2 py-1 rounded">Chủ</span>}</div>))}</div></div><div className="bg-white p-6 rounded-xl border shadow-sm"><div className="flex items-center space-x-3 mb-4 text-slate-800"><History size={20} className="text-[#ea580c]" /><h3 className="font-bold text-lg">Dữ liệu thủ công</h3></div><form onSubmit={handleManualSubmit} className="space-y-4"><div className="space-y-1.5"><label className="text-xs font-bold text-slate-700">Ngày</label><input type="date" required value={manualDate} onChange={e => setManualDate(e.target.value)} className="w-full px-3 py-2 border rounded-lg" /></div><div className="grid grid-cols-2 gap-4"><div className="space-y-1.5"><label className="text-xs font-bold text-slate-700">CVKD</label><input type="number" min="0" required value={manualStaff} onChange={e => setManualStaff(parseInt(e.target.value))} className="w-full px-3 py-2 border rounded-lg" /></div><div className="space-y-1.5"><label className="text-xs font-bold text-slate-700">Khách</label><input type="number" min="0" required value={manualCustomer} onChange={e => setManualCustomer(parseInt(e.target.value))} className="w-full px-3 py-2 border rounded-lg" /></div></div><button type="submit" className="w-full bg-[#ea580c] text-white py-2 rounded-lg font-bold shadow hover:bg-[#c2410c] flex items-center justify-center gap-2"><Plus size={16} /> Thêm dữ liệu</button></form></div></div><div className="space-y-6"><div className="bg-white p-6 rounded-xl border shadow-sm text-center"><div className="bg-orange-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4"><FileSpreadsheet size={32} className="text-[#ea580c]" /></div><h3 className="text-lg font-bold mb-2">Nhập từ Excel (CSV)</h3><p className="text-slate-500 text-xs mb-6">Đồng bộ hóa dữ liệu từ tệp Excel (CSV).</p><label className="block w-full border-2 border-dashed border-slate-200 rounded-xl p-8 hover:border-[#ea580c] hover:bg-orange-50/30 transition-all cursor-pointer"><input type="file" accept=".csv" className="hidden" onChange={handleFileUpload} /><Upload className="mx-auto text-slate-400 mb-3" size={24} /><span className="block font-bold text-sm text-slate-700">Chọn tệp CSV</span></label></div><div className="bg-white rounded-xl border border-red-200 shadow-sm overflow-hidden"><div className="bg-red-50 p-4 border-b border-red-100 flex items-center space-x-2 text-red-600"><AlertTriangle size={20} /><h3 className="font-bold text-sm">KHU VỰC NGUY HIỂM</h3></div><div className="p-6 text-center"><p className="text-xs text-red-800 mb-4">Xóa sạch toàn bộ <b>{checkIns.length}</b> dòng dữ liệu hiện có.</p><button onClick={handleClearAllData} className="w-full px-4 py-2 bg-red-600 text-white rounded-lg font-bold flex items-center justify-center space-x-2 hover:bg-red-700 shadow-md"><Trash2 size={16} /><span>Xóa Sạch Dữ Liệu</span></button></div></div></div></div>
+                      <div className="animate-in fade-in grid grid-cols-1 lg:grid-cols-2 gap-6"><div className="space-y-6"><div className="bg-white p-6 rounded-xl border shadow-sm"><div className="flex items-center space-x-3 mb-6 text-slate-800"><Settings size={20} className="text-slate-500" /><h3 className="font-bold text-lg">Phân quyền Admin</h3></div><form onSubmit={e => { e.preventDefault(); if (newAdminEmail && !adminList.includes(newAdminEmail)) { setAdminList([...adminList, newAdminEmail]); setNewAdminEmail(''); } }} className="flex gap-2 mb-6"><input type="email" required value={newAdminEmail} onChange={e => setNewAdminEmail(e.target.value)} placeholder="Email admin mới..." className="flex-1 px-4 py-2 border rounded-lg text-sm outline-none focus:ring-2" /><button type="submit" className="bg-slate-800 text-white px-4 py-2 rounded-lg hover:bg-slate-900 transition-colors"><Plus size={16}/></button></form><div className="space-y-2">{adminList.map((email: string) => (<div key={email} className="flex justify-between items-center p-3 bg-slate-50 rounded-lg border"><div className="flex items-center space-x-3"><div className="w-6 h-6 bg-white border rounded-full flex items-center justify-center text-slate-400"><UserIcon size={12} /></div><span className="text-sm font-bold text-slate-700">{email}</span></div>{email !== ROOT_ADMIN_EMAIL && (<button onClick={() => setAdminList(adminList.filter((e: string) => e !== email))} className="text-slate-300 hover:text-red-500 p-1.5 transition-colors"><Trash2 size={16}/></button>)}{email === ROOT_ADMIN_EMAIL && <span className="text-[9px] font-extrabold text-slate-400 uppercase tracking-widest bg-slate-200 px-2 py-1 rounded">Chủ</span>}</div>))}</div></div><div className="bg-white p-6 rounded-xl border shadow-sm"><div className="flex items-center space-x-3 mb-4 text-slate-800"><History size={20} className="text-[#ea580c]" /><h3 className="font-bold text-lg">Thêm dữ liệu nhỏ (Thủ công)</h3></div><form onSubmit={handleManualSubmit} className="space-y-4"><div className="space-y-1.5"><label className="text-xs font-bold text-slate-700">Ngày bổ sung</label><input type="date" required value={manualDate} onChange={e => setManualDate(e.target.value)} className="w-full px-3 py-2 border rounded-lg" /></div><div className="grid grid-cols-2 gap-4"><div className="space-y-1.5"><label className="text-xs font-bold text-slate-700">CVKD</label><input type="number" min="0" required value={manualStaff} onChange={e => setManualStaff(parseInt(e.target.value))} className="w-full px-3 py-2 border rounded-lg" /></div><div className="space-y-1.5"><label className="text-xs font-bold text-slate-700">Khách</label><input type="number" min="0" required value={manualCustomer} onChange={e => setManualCustomer(parseInt(e.target.value))} className="w-full px-3 py-2 border rounded-lg" /></div></div><button type="submit" className="w-full bg-[#ea580c] text-white py-2 rounded-lg font-bold shadow hover:bg-[#c2410c] flex items-center justify-center gap-2"><Plus size={16} /> Thêm dữ liệu</button></form></div></div><div className="space-y-6"><div className="bg-white p-6 rounded-xl border shadow-sm text-center"><div className="bg-orange-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4"><FileSpreadsheet size={32} className="text-[#ea580c]" /></div><h3 className="text-lg font-bold mb-2">Nhập từ File Google Forms (CSV)</h3><p className="text-slate-500 text-xs mb-6 px-4">Tải lên file dữ liệu CSV xuất từ Google Forms. Hệ thống tự động phân tích và đồng bộ siêu tốc.</p><label className="block w-full border-2 border-dashed border-slate-300 rounded-xl p-8 hover:border-[#ea580c] hover:bg-orange-50/50 transition-all cursor-pointer"><input type="file" accept=".csv" className="hidden" onChange={handleFileUpload} /><Upload className="mx-auto text-slate-400 mb-3" size={28} /><span className="block font-bold text-sm text-slate-700">Click chọn tệp CSV</span></label></div><div className="bg-white rounded-xl border border-red-200 shadow-sm overflow-hidden"><div className="bg-red-50 p-4 border-b border-red-100 flex items-center space-x-2 text-red-600"><AlertTriangle size={20} /><h3 className="font-bold text-sm">KHU VỰC NGUY HIỂM</h3></div><div className="p-6 text-center"><p className="text-xs text-red-800 mb-4">Xóa sạch toàn bộ <b>{checkIns.length}</b> dòng dữ liệu hiện có để làm mới hoàn toàn.</p><button onClick={handleClearAllData} className="w-full px-4 py-3 bg-red-600 text-white rounded-lg font-bold flex items-center justify-center space-x-2 hover:bg-red-700 shadow-md transition-colors"><Trash2 size={16} /><span>Xóa Sạch Data</span></button></div></div></div></div>
                     )}
-                    </>
-                  ) : (
-                    <div className="flex flex-col items-center justify-center h-[400px] text-slate-400 font-bold uppercase tracking-widest animate-pulse">
-                      Đang đồng bộ dữ liệu...
-                    </div>
-                  )}
                 </div>
               </div>
             )}
