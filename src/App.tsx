@@ -193,7 +193,7 @@ const App = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const today = new Date();
-    const dateStr = getLocalDateString(today); // Dùng giờ địa phương
+    const dateStr = getLocalDateString(today);
 
     const newCheckIn = {
       ...formData,
@@ -249,14 +249,15 @@ const App = () => {
     
     const idx = {
       ts: headers.findIndex(h => h.includes("dấu thời gian") || h.includes("thời gian")),
+      date: headers.findIndex(h => h.includes("ngày tham quan") || h.includes("ngày")),
       agency: headers.findIndex(h => h.includes("tên đơn vị") || h.includes("đại lý")),
       staff: headers.findIndex(h => h.includes("họ và tên cvtv") || h.includes("tên cvkd")),
-      sPhone: headers.findIndex(h => h.includes("số điện thoại cvtv") || h.includes("sđt cvkd")),
-      cName: headers.findIndex(h => h.includes("tên khách hàng")),
-      cCount: headers.findIndex(h => h.includes("số lượng khách hàng") || h.includes("sl khách")),
-      cPhone: headers.findIndex(h => h.includes("số điện thoại kh")),
-      age: headers.findIndex(h => h.includes("độ tuổi")),
-      sCount: headers.findIndex(h => h.includes("số lượng cvtv") || h.includes("sl cvkd"))
+      sPhone: headers.findIndex(h => h.includes("số điện thoại cvtv") || h.includes("sđt cvkd") || h.includes("điện thoại cvtv")),
+      cName: headers.findIndex(h => h.includes("tên khách hàng") || h.includes("tên khách")),
+      cCount: headers.findIndex(h => h.includes("số lượng khách hàng") || h.includes("sl khách") || h.includes("số lượng khách")),
+      cPhone: headers.findIndex(h => h.includes("số điện thoại kh") || h.includes("sđt kh") || h.includes("điện thoại kh")),
+      age: headers.findIndex(h => h.includes("độ tuổi") || h.includes("tuổi")),
+      sCount: headers.findIndex(h => h.includes("số lượng cvtv") || h.includes("sl cvkd") || h.includes("số lượng cv"))
     };
 
     const collectionPath = collection(db, 'artifacts', appId, 'public', 'data', 'gallery_checkins');
@@ -273,40 +274,48 @@ const App = () => {
 
         const clean = (val: string) => val ? val.replace(/"/g, '').trim() : '';
         
-        const timestampRaw = clean(row[idx.ts]);
-        let dateStr = getLocalDateString(new Date()); // Mặc định là hôm nay nếu lỗi
+        const timestampRaw = idx.ts !== -1 ? clean(row[idx.ts]) : '';
+        const dateRaw = idx.date !== -1 ? clean(row[idx.date]) : '';
+        
+        let dateStr = '';
+        const strToParse = timestampRaw || dateRaw;
 
-        // --- FIX LỖI NGÀY THÁNG KHI IMPORT ---
-        if (timestampRaw) {
-          // Bắt trực tiếp định dạng YYYY-MM-DD từ text (VD: "2026-04-12 12:44:23")
-          const match = timestampRaw.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
-          if (match) {
-            const y = match[1];
-            const m = match[2].padStart(2, '0');
-            const d = match[3].padStart(2, '0');
-            dateStr = `${y}-${m}-${d}`;
+        // --- CƠ CHẾ NHẬN DIỆN NGÀY THÁNG MỚI (CHẶT CHẼ HƠN) ---
+        if (strToParse) {
+          // Bắt định dạng YYYY-MM-DD
+          const matchYMD = strToParse.match(/(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+          // Bắt định dạng DD-MM-YYYY hoặc DD/MM/YYYY
+          const matchDMY = strToParse.match(/(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})/);
+
+          if (matchYMD) {
+            dateStr = `${matchYMD[1]}-${matchYMD[2].padStart(2, '0')}-${matchYMD[3].padStart(2, '0')}`;
+          } else if (matchDMY) {
+            dateStr = `${matchDMY[3]}-${matchDMY[2].padStart(2, '0')}-${matchDMY[1].padStart(2, '0')}`;
           } else {
-            // Fallback: Thử dùng new Date nếu format khác
-            const dateObj = new Date(timestampRaw.replace(/-/g, "/"));
+            // Fallback
+            const dateObj = new Date(strToParse.replace(/-/g, "/"));
             if (!isNaN(dateObj.getTime())) {
               dateStr = getLocalDateString(dateObj);
             }
           }
         }
 
+        // TỐI QUAN TRỌNG: Nếu dòng này trống, lỗi, không xác định được ngày -> BỎ QUA KHÔNG IMPORT DÒNG NÀY NỮA
+        if (!dateStr) continue;
+
         const docData = {
           id: Date.now() + i,
           date: dateStr,
-          timestamp: timestampRaw || new Date().toLocaleString('vi-VN'),
-          agencyName: clean(row[idx.agency]),
-          staffName: clean(row[idx.staff]),
-          staffPhone: clean(row[idx.sPhone]).slice(-4),
-          staffCount: parseInt(clean(row[idx.sCount])) || 1,
-          customerName: clean(row[idx.cName]),
-          customerCount: parseInt(clean(row[idx.cCount])) || 0,
-          customerPhone: clean(row[idx.cPhone]).slice(-4),
-          customerAge: clean(row[idx.age]),
-          hasCustomer: (parseInt(clean(row[idx.cCount])) || 0) > 0,
+          timestamp: timestampRaw || dateStr || new Date().toLocaleString('vi-VN'),
+          agencyName: idx.agency !== -1 ? clean(row[idx.agency]) : 'N/A',
+          staffName: idx.staff !== -1 ? clean(row[idx.staff]) : 'N/A',
+          staffPhone: idx.sPhone !== -1 ? clean(row[idx.sPhone]).slice(-4) : '',
+          staffCount: idx.sCount !== -1 ? (parseInt(clean(row[idx.sCount])) || 1) : 1,
+          customerName: idx.cName !== -1 ? clean(row[idx.cName]) : '',
+          customerCount: idx.cCount !== -1 ? parseInt(clean(row[idx.cCount])) || 0 : 0,
+          customerPhone: idx.cPhone !== -1 ? clean(row[idx.cPhone]).slice(-4) : '',
+          customerAge: idx.age !== -1 ? clean(row[idx.age]) : '',
+          hasCustomer: idx.cCount !== -1 ? (parseInt(clean(row[idx.cCount])) || 0) > 0 : false,
           isImported: true
         };
 
@@ -325,7 +334,7 @@ const App = () => {
       setImportProgress(100);
       setTimeout(() => {
         setImportLoading(false);
-        alert(`Đã nhập thành công ${count} dòng dữ liệu!`);
+        alert(`Đã nhập thành công ${count} dòng dữ liệu hợp lệ!`);
         setAdminSubTab('list');
       }, 500);
     } catch (err: any) {
@@ -341,6 +350,12 @@ const App = () => {
     setImportProgress(0);
     let count = 0;
     const total = checkIns.length;
+
+    if (total === 0) {
+      setImportLoading(false);
+      alert("Chưa có dữ liệu nào để xóa.");
+      return;
+    }
 
     try {
       let batch = writeBatch(db);
@@ -455,7 +470,6 @@ const App = () => {
 
   const chartData = useMemo(() => {
     const dataMap: any = {};
-    // Tạo baseDate từ chartFocusDate một cách an toàn (tránh lệch UTC)
     const [y, m, d] = chartFocusDate.split('-').map(Number);
     const baseDate = new Date(y, m - 1, d);
     baseDate.setHours(0,0,0,0);
@@ -891,12 +905,12 @@ const App = () => {
                             ))}
                           </div>
 
-                          {/* Chart Area with Grid and Axes */}
-                          <div className="flex-1 relative border-l-2 border-b-2 border-slate-500/80 shadow-[inset_0_-1px_0_rgba(255,255,255,0.05),inset_1px_0_0_rgba(255,255,255,0.05)]">
-                            {/* Horizontal Grids */}
+                          {/* Chart Area with Cải tiến rõ nét viền trục X-Y */}
+                          <div className="flex-1 relative border-l-[3px] border-b-[3px] border-slate-400">
+                            {/* Horizontal Grids (Lưới mờ) */}
                             <div className="absolute inset-0 flex flex-col justify-between pointer-events-none">
                               {[0, 1, 2, 3, 4].map((_, idx) => (
-                                <div key={idx} className="w-full border-t border-slate-700/40 border-dashed"></div>
+                                <div key={idx} className="w-full border-t border-slate-500/40 border-dashed"></div>
                               ))}
                             </div>
 
