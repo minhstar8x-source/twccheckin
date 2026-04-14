@@ -16,7 +16,8 @@ import {
   Loader2, 
   History,
   FileSpreadsheet,
-  Upload
+  Upload,
+  AlertTriangle
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { 
@@ -172,7 +173,7 @@ const App = () => {
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
     if ((name === 'staffPhone' || name === 'customerPhone')) {
-      const regex = /^[0-9]{0,12}$/; // Cho phép dán cả số dài nếu từ Excel
+      const regex = /^[0-9]{0,12}$/; 
       if (!regex.test(value)) return;
     }
     setFormData({ ...formData, [name]: value });
@@ -226,7 +227,6 @@ const App = () => {
     setImportLoading(true);
     setImportProgress(0);
     
-    // Tách dòng, bỏ dòng tiêu đề
     const lines = csvText.split(/\r?\n/).filter(line => line.trim() !== "");
     if (lines.length < 2) {
       alert("Tệp không có dữ liệu.");
@@ -234,10 +234,8 @@ const App = () => {
       return;
     }
 
-    // Phân tích header để ánh xạ cột
     const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
     
-    // Tìm vị trí các cột dựa trên tên trong tệp của bạn
     const idx = {
       ts: headers.findIndex(h => h.includes("dấu thời gian")),
       agency: headers.findIndex(h => h.includes("tên đơn vị")),
@@ -254,14 +252,13 @@ const App = () => {
     const dataRows = lines.slice(1);
     const total = dataRows.length;
     
-    // Sử dụng batch để đẩy nhanh (Firestore giới hạn 500 docs per batch)
     let batch = writeBatch(db);
     let count = 0;
 
     try {
       for (let i = 0; i < dataRows.length; i++) {
-        // Handle CSV split with quotes (regex for CSV)
-        const row = dataRows[i].match(/(".*?"|[^",\s]+)(?=\s*,|\s*$)/g) || [];
+        // Robust CSV splitting
+        const row = dataRows[i].match(/(".*?"|[^",\r\n]+)(?=\s*,|\s*$)/g) || [];
         if (row.length < 3) continue;
 
         const clean = (val: string) => val ? val.replace(/"/g, '').trim() : '';
@@ -306,6 +303,43 @@ const App = () => {
       }, 500);
     } catch (err: any) {
       alert("Lỗi khi nhập dữ liệu: " + err.message);
+      setImportLoading(false);
+    }
+  };
+
+  const handleClearAllData = async () => {
+    if (!window.confirm("CẢNH BÁO NGUY HIỂM: Hành động này sẽ xóa vĩnh viễn TOÀN BỘ dữ liệu check-in trong hệ thống. Bạn có chắc chắn muốn thực hiện?")) return;
+    
+    setImportLoading(true);
+    setImportProgress(0);
+    let count = 0;
+    const total = checkIns.length;
+
+    try {
+      let batch = writeBatch(db);
+      for (const item of checkIns) {
+        const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'gallery_checkins', item.firebaseId);
+        batch.delete(docRef);
+        count++;
+
+        if (count % 450 === 0) {
+          await batch.commit();
+          batch = writeBatch(db);
+          setImportProgress(Math.round((count / total) * 100));
+        }
+      }
+
+      if (count % 450 !== 0) {
+        await batch.commit();
+      }
+
+      setImportProgress(100);
+      setTimeout(() => {
+        setImportLoading(false);
+        alert(`Đã xóa sạch toàn bộ ${count} dòng dữ liệu.`);
+      }, 500);
+    } catch (err: any) {
+      alert("Lỗi khi xóa: " + err.message);
       setImportLoading(false);
     }
   };
@@ -543,6 +577,20 @@ const App = () => {
         @import url('https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&display=swap');
         body, input, button, select { font-family: 'Be Vietnam Pro', sans-serif !important; }
       `}} />
+
+      {importLoading && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/70 backdrop-blur-md">
+          <div className="bg-white p-8 rounded-3xl shadow-2xl w-80 text-center animate-in zoom-in-95">
+             <div className="w-16 h-16 border-4 border-orange-100 border-t-[#ea580c] rounded-full animate-spin mx-auto mb-4"></div>
+             <h3 className="font-bold text-slate-800 mb-1">Đang xử lý dữ liệu</h3>
+             <p className="text-xs text-slate-500 mb-4">Vui lòng không đóng trình duyệt</p>
+             <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden mb-2">
+                <div className="bg-[#ea580c] h-full transition-all duration-300" style={{ width: `${importProgress}%` }}></div>
+             </div>
+             <p className="text-[10px] font-bold text-[#ea580c]">{importProgress}% hoàn thành</p>
+          </div>
+        </div>
+      )}
 
       {showSuccess && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in">
@@ -884,35 +932,59 @@ const App = () => {
                   {/* CÀI ĐẶT */}
                   {adminSubTab === 'settings' && (
                     <div className="max-w-2xl mx-auto animate-in fade-in">
-                      <div className="bg-white p-8 rounded-xl border shadow-sm">
-                        <div className="flex items-center space-x-3 mb-6 text-slate-800">
-                          <Settings size={24} className="text-slate-500" />
-                          <h3 className="font-bold text-lg">Quản lý Quản trị viên</h3>
-                        </div>
-                        <form onSubmit={e => {
-                          e.preventDefault();
-                          if (newAdminEmail && !adminList.includes(newAdminEmail)) {
-                            setAdminList([...adminList, newAdminEmail]);
-                            setNewAdminEmail('');
-                          }
-                        }} className="flex gap-3 mb-8">
-                          <input type="email" required value={newAdminEmail} onChange={e => setNewAdminEmail(e.target.value)} placeholder="Nhập email mới..." className="flex-1 px-4 py-2.5 border rounded-lg text-sm outline-none focus:ring-2 focus:ring-slate-300" />
-                          <button type="submit" className="bg-slate-800 text-white px-6 py-2.5 rounded-lg text-sm font-bold flex items-center hover:bg-slate-900 transition-all"><Plus size={18} className="mr-1"/> Thêm</button>
-                        </form>
-                        <div className="space-y-3">
-                          {adminList.map(email => (
-                            <div key={email} className="flex justify-between items-center p-4 bg-slate-50 rounded-xl border border-slate-100 transition-all hover:border-slate-300">
-                              <div className="flex items-center space-x-3">
-                                <div className="w-8 h-8 bg-white border rounded-full flex items-center justify-center text-slate-400"><User size={16} /></div>
-                                <span className="text-sm font-bold text-slate-700">{email}</span>
+                      <div className="bg-white p-8 rounded-xl border shadow-sm space-y-8">
+                        <div>
+                          <div className="flex items-center space-x-3 mb-6 text-slate-800">
+                            <Settings size={24} className="text-slate-500" />
+                            <h3 className="font-bold text-lg">Quản lý Quản trị viên</h3>
+                          </div>
+                          <form onSubmit={e => {
+                            e.preventDefault();
+                            if (newAdminEmail && !adminList.includes(newAdminEmail)) {
+                              setAdminList([...adminList, newAdminEmail]);
+                              setNewAdminEmail('');
+                            }
+                          }} className="flex gap-3 mb-8">
+                            <input type="email" required value={newAdminEmail} onChange={e => setNewAdminEmail(e.target.value)} placeholder="Nhập email mới..." className="flex-1 px-4 py-2.5 border rounded-lg text-sm outline-none focus:ring-2 focus:ring-slate-300" />
+                            <button type="submit" className="bg-slate-800 text-white px-6 py-2.5 rounded-lg text-sm font-bold flex items-center hover:bg-slate-900 transition-all"><Plus size={18} className="mr-1"/> Thêm</button>
+                          </form>
+                          <div className="space-y-3">
+                            {adminList.map(email => (
+                              <div key={email} className="flex justify-between items-center p-4 bg-slate-50 rounded-xl border border-slate-100 transition-all hover:border-slate-300">
+                                <div className="flex items-center space-x-3">
+                                  <div className="w-8 h-8 bg-white border rounded-full flex items-center justify-center text-slate-400"><User size={16} /></div>
+                                  <span className="text-sm font-bold text-slate-700">{email}</span>
+                                </div>
+                                {email !== ROOT_ADMIN_EMAIL && (
+                                  <button onClick={() => setAdminList(adminList.filter(e => e !== email))} className="text-slate-300 hover:text-red-500 p-2 transition-colors"><Trash2 size={20}/></button>
+                                )}
+                                {email === ROOT_ADMIN_EMAIL && <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest bg-slate-100 px-2 py-1 rounded">Chủ sở hữu</span>}
                               </div>
-                              {email !== ROOT_ADMIN_EMAIL && (
-                                <button onClick={() => setAdminList(adminList.filter(e => e !== email))} className="text-slate-300 hover:text-red-500 p-2 transition-colors"><Trash2 size={20}/></button>
-                              )}
-                              {email === ROOT_ADMIN_EMAIL && <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest bg-slate-100 px-2 py-1 rounded">Chủ sở hữu</span>}
-                            </div>
-                          ))}
+                            ))}
+                          </div>
                         </div>
+
+                        {/* ROOT ADMIN ONLY: DANGEROUS AREA */}
+                        {adminEmail === ROOT_ADMIN_EMAIL && (
+                          <div className="pt-8 border-t border-red-100">
+                             <div className="flex items-center space-x-3 mb-4 text-red-600">
+                               <AlertTriangle size={24} />
+                               <h3 className="font-bold text-lg uppercase tracking-tight">Khu vực nguy hiểm</h3>
+                             </div>
+                             <div className="bg-red-50 p-6 rounded-2xl border border-red-100">
+                                <p className="text-sm text-red-800 font-medium mb-4">
+                                  Hành động này sẽ xóa sạch toàn bộ {checkIns.length} dòng dữ liệu đã lưu trong hệ thống. Dữ liệu sau khi xóa sẽ **không thể khôi phục**.
+                                </p>
+                                <button 
+                                  onClick={handleClearAllData}
+                                  className="w-full sm:w-auto px-6 py-3 bg-red-600 text-white rounded-xl font-bold flex items-center justify-center space-x-2 hover:bg-red-700 transition-all shadow-lg shadow-red-200"
+                                >
+                                  <Trash2 size={20} />
+                                  <span>Xóa Sạch Toàn Bộ Dữ Liệu</span>
+                                </button>
+                             </div>
+                          </div>
+                        )}
                       </div>
                     </div>
                   )}
