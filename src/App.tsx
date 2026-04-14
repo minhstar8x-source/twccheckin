@@ -18,7 +18,6 @@ import {
   AlertTriangle,
   ChevronLeft,
   ChevronRight,
-  Camera,
   Loader2
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
