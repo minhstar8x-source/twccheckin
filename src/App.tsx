@@ -56,6 +56,29 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 const appId = typeof w.__app_id !== 'undefined' ? w.__app_id : 'default-app-id';
 
+// ============================================================================
+// BÍ QUYẾT TỐI THƯỢNG: CƠ CHẾ AUTO-RETRY CHỐNG TREO MẠNG IM LẶNG
+// ============================================================================
+const commitBatchWithRetry = async (batch: any, retries = 3, timeoutMs = 20000) => {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      await Promise.race([
+        batch.commit(),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error("TIMEOUT_HANG")), timeoutMs)
+        )
+      ]);
+      return; // Nếu đẩy thành công, thoát vòng lặp ngay
+    } catch (error: any) {
+      if (attempt === retries) {
+        throw new Error("Mạng quá yếu hoặc máy chủ từ chối kết nối. Đã thử lại 3 lần không thành công.");
+      }
+      console.warn(`Gói dữ liệu kẹt mạng (lần ${attempt}). Đang kết nối lại...`);
+      await new Promise(r => setTimeout(r, 2000)); // Nghỉ 2 giây trước khi thử lại gói này
+    }
+  }
+};
+
 // Helper Dates
 const getLocalDateString = (date: Date) => {
   const y = date.getFullYear();
@@ -137,7 +160,7 @@ const App = () => {
   });
   useEffect(() => localStorage.setItem('twc_adminList', JSON.stringify(adminList)), [adminList]);
 
-  // IMPORT / LOADING STATES (Cờ báo hiệu để tối ưu RAM)
+  // IMPORT / LOADING STATES
   const [isProcessingData, setIsProcessingData] = useState(false);
   const [importProgress, setImportProgress] = useState(0);
   const [importStatusText, setImportStatusText] = useState("");
@@ -176,14 +199,13 @@ const App = () => {
 
   // FIRESTORE LISTENER
   useEffect(() => {
-    // TỐI ƯU CỰC KỲ QUAN TRỌNG: Ngắt hoàn toàn lắng nghe dữ liệu khi đang nhập/xóa
-    // Điều này giúp React không phải Render lại 4000 dòng liên tục mỗi khi ghi xong 1 gói nhỏ
+    // Ngắt theo dõi data khi đang import/delete để tránh treo máy cục bộ
     if (!user || !firebaseConfig.apiKey || isProcessingData) return; 
     
     const collectionPath = collection(db, 'artifacts', appId, 'public', 'data', 'gallery_checkins');
     const unsubscribe = onSnapshot(collectionPath, (snapshot) => {
       const data = snapshot.docs.map((doc: any) => ({ firebaseId: doc.id, ...doc.data() }));
-      data.sort((a: any, b: any) => b.id - a.id); // Sắp xếp ID mới nhất lên đầu
+      data.sort((a: any, b: any) => b.id - a.id); 
       setCheckIns(data);
     }, (error) => {
       console.error("Firestore error:", error);
@@ -232,23 +254,26 @@ const App = () => {
   };
 
   // ======================================================================
-  // CHỨC NĂNG XÓA DỮ LIỆU SỐ LƯỢNG LỚN (ĐÃ GỠ LỖI TIMEOUT)
+  // CHỨC NĂNG XÓA DỮ LIỆU SỐ LƯỢNG LỚN TỐI ƯU
   // ======================================================================
   const handleClearAllData = async () => {
     if (!window.confirm(`CẢNH BÁO: Xóa vĩnh viễn TOÀN BỘ ${checkIns.length} dòng dữ liệu hiện tại? Hành động này không thể hoàn tác!`)) return;
     if (checkIns.length === 0) return;
 
+    // Lấy dữ liệu tạm ra và xóa luôn mảng trên giao diện để giải phóng RAM
+    const itemsToDelete = [...checkIns];
+    setCheckIns([]); 
     setIsProcessingData(true);
     setImportProgress(0);
     setImportStatusText("Đang dọn dẹp hệ thống...");
 
     try {
-      const chunkSize = 400; // Tăng lên 400 để xóa siêu tốc
-      const total = checkIns.length;
+      const chunkSize = 150; // Mức cân bằng hoàn hảo cho xóa
+      const total = itemsToDelete.length;
       
       for (let i = 0; i < total; i += chunkSize) {
         const batch = writeBatch(db);
-        const chunk = checkIns.slice(i, i + chunkSize);
+        const chunk = itemsToDelete.slice(i, i + chunkSize);
         
         chunk.forEach(item => {
           if (item.firebaseId) {
@@ -256,18 +281,17 @@ const App = () => {
           }
         });
 
-        await batch.commit(); // Xóa timeout khắt khe, chờ Firestore tự xử lý tự do
+        // Chạy qua cỗ máy Retry 3 lần
+        await commitBatchWithRetry(batch);
         
         const progress = Math.round(((i + chunk.length) / total) * 100);
         setImportProgress(progress > 100 ? 100 : progress);
         setImportStatusText(`Đã xóa: ${i + chunk.length} / ${total} dòng...`);
         
-        // Nghỉ 1 giây giữa các gói để mạng không bị nghẽn
-        await new Promise(r => setTimeout(r, 1000)); 
+        await new Promise(r => setTimeout(r, 500)); 
       }
 
       setImportProgress(100);
-      setCheckIns([]); 
       setTimeout(() => { setIsProcessingData(false); alert("Đã dọn sạch toàn bộ dữ liệu thành công!"); }, 500);
     } catch (err: any) { 
       alert("Lỗi quá trình xóa: " + err.message); 
@@ -276,7 +300,7 @@ const App = () => {
   };
 
   // ======================================================================
-  // CHỨC NĂNG NHẬP DỮ LIỆU TỪ EXCEL (ĐÃ GỠ LỖI TIMEOUT NGẮT Ở 200)
+  // CHỨC NĂNG NHẬP DỮ LIỆU TỪ EXCEL VỚI AUTO-RETRY
   // ======================================================================
   const processCSV = async (csvText: string) => {
     setIsProcessingData(true);
@@ -311,7 +335,8 @@ const App = () => {
     const baseTimestamp = Date.now();
 
     try {
-      const chunkSize = 400; // Tăng lên 400 dòng/gói để tối ưu tốc độ
+      // Dùng gói 100 (Cực an toàn) + Retry 3 lần. Dù mạng chậm thế nào cũng nạp xong.
+      const chunkSize = 100; 
       
       for (let i = 0; i < total; i += chunkSize) {
         const batch = writeBatch(db);
@@ -359,15 +384,15 @@ const App = () => {
           validCount++;
         });
 
-        // Bỏ timeout khắt khe 15 giây, để quá trình chạy hoàn toàn tự nhiên
-        await batch.commit();
+        // Bọc trong cỗ máy Tự động thử lại khi kẹt
+        await commitBatchWithRetry(batch);
         
         const progress = Math.round(((i + currentChunk.length) / total) * 100);
         setImportProgress(progress > 100 ? 100 : progress);
         setImportStatusText(`Đã nhập: ${validCount} / ${total} dòng...`);
         
-        // Thời gian nghỉ giữa các gói là 1 giây, cho mạng kịp "thở"
-        await new Promise(r => setTimeout(r, 1000));
+        // Nghỉ 0.5s giữa các gói
+        await new Promise(r => setTimeout(r, 500));
       }
 
       setImportProgress(100);
@@ -378,7 +403,7 @@ const App = () => {
       }, 600);
       
     } catch (err: any) { 
-      alert("Quá trình nhập bị gián đoạn do lỗi mạng hoặc file: " + err.message); 
+      alert("Quá trình nhập bị gián đoạn: " + err.message); 
       setIsProcessingData(false); 
     }
   };
