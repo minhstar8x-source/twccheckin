@@ -57,26 +57,16 @@ const db = getFirestore(app);
 const appId = typeof w.__app_id !== 'undefined' ? w.__app_id : 'default-app-id';
 
 // ============================================================================
-// BÍ QUYẾT TỐI THƯỢNG: CƠ CHẾ AUTO-RETRY CHỐNG TREO MẠNG IM LẶNG
+// HÀM GỬI DỮ LIỆU AN TOÀN CHỐNG TREO MẠNG
 // ============================================================================
-const commitBatchWithRetry = async (batch: any, retries = 3, timeoutMs = 20000) => {
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
-      await Promise.race([
-        batch.commit(),
-        new Promise((_, reject) => 
-          setTimeout(() => reject(new Error("TIMEOUT_HANG")), timeoutMs)
-        )
-      ]);
-      return; // Nếu đẩy thành công, thoát vòng lặp ngay
-    } catch (error: any) {
-      if (attempt === retries) {
-        throw new Error("Mạng quá yếu hoặc máy chủ từ chối kết nối. Đã thử lại 3 lần không thành công.");
-      }
-      console.warn(`Gói dữ liệu kẹt mạng (lần ${attempt}). Đang kết nối lại...`);
-      await new Promise(r => setTimeout(r, 2000)); // Nghỉ 2 giây trước khi thử lại gói này
-    }
-  }
+const safeBatchCommit = async (batch: any) => {
+  // Cho phép tối đa 30 giây để đẩy 1 gói dữ liệu (Chống treo vô tận)
+  await Promise.race([
+    batch.commit(),
+    new Promise((_, reject) => 
+      setTimeout(() => reject(new Error("Mạng bị nghẽn hoặc mất kết nối. Xin vui lòng thử lại sau.")), 30000)
+    )
+  ]);
 };
 
 // Helper Dates
@@ -103,7 +93,7 @@ const AGE_COLORS: Record<string, string> = {
   '< 25': 'bg-rose-400', '25-35': 'bg-amber-400', '36-45': 'bg-emerald-400', '46-55': 'bg-blue-400', '> 55': 'bg-violet-400', 'Khác': 'bg-slate-400'
 };
 
-// Thuật toán Đọc CSV V2: Xử lý ngoặc kép và Enter xuống dòng cực kỳ chính xác
+// Thuật toán Đọc CSV V2 (Đã tối ưu cực nhanh để không bị kẹt RAM)
 const parseCSVFull = (text: string) => {
   const rows: string[][] = [];
   let currentRow: string[] = [];
@@ -199,7 +189,7 @@ const App = () => {
 
   // FIRESTORE LISTENER
   useEffect(() => {
-    // Ngắt theo dõi data khi đang import/delete để tránh treo máy cục bộ
+    // Tối quan trọng: Ngắt lắng nghe khi đang xử lý dữ liệu nặng
     if (!user || !firebaseConfig.apiKey || isProcessingData) return; 
     
     const collectionPath = collection(db, 'artifacts', appId, 'public', 'data', 'gallery_checkins');
@@ -254,158 +244,165 @@ const App = () => {
   };
 
   // ======================================================================
-  // CHỨC NĂNG XÓA DỮ LIỆU SỐ LƯỢNG LỚN TỐI ƯU
+  // XÓA SẠCH DỮ LIỆU (ĐÃ TỐI ƯU CƠ CHẾ RAM)
   // ======================================================================
   const handleClearAllData = async () => {
     if (!window.confirm(`CẢNH BÁO: Xóa vĩnh viễn TOÀN BỘ ${checkIns.length} dòng dữ liệu hiện tại? Hành động này không thể hoàn tác!`)) return;
     if (checkIns.length === 0) return;
 
-    // Lấy dữ liệu tạm ra và xóa luôn mảng trên giao diện để giải phóng RAM
+    // Lưu mảng cần xóa, ngay lập tức giải phóng RAM hiển thị
     const itemsToDelete = [...checkIns];
     setCheckIns([]); 
     setIsProcessingData(true);
     setImportProgress(0);
     setImportStatusText("Đang dọn dẹp hệ thống...");
 
-    try {
-      const chunkSize = 150; // Mức cân bằng hoàn hảo cho xóa
-      const total = itemsToDelete.length;
-      
-      for (let i = 0; i < total; i += chunkSize) {
-        const batch = writeBatch(db);
-        const chunk = itemsToDelete.slice(i, i + chunkSize);
+    // Nghỉ 1 nhịp để giao diện loading hiện lên trước khi máy tính "nai lưng" ra chạy
+    setTimeout(async () => {
+      try {
+        const chunkSize = 200; 
+        const total = itemsToDelete.length;
         
-        chunk.forEach(item => {
-          if (item.firebaseId) {
-            batch.delete(doc(db, 'artifacts', appId, 'public', 'data', 'gallery_checkins', item.firebaseId));
-          }
-        });
-
-        // Chạy qua cỗ máy Retry 3 lần
-        await commitBatchWithRetry(batch);
-        
-        const progress = Math.round(((i + chunk.length) / total) * 100);
-        setImportProgress(progress > 100 ? 100 : progress);
-        setImportStatusText(`Đã xóa: ${i + chunk.length} / ${total} dòng...`);
-        
-        await new Promise(r => setTimeout(r, 500)); 
+        for (let i = 0; i < total; i += chunkSize) {
+          const batch = writeBatch(db);
+          const chunk = itemsToDelete.slice(i, i + chunkSize);
+          
+          chunk.forEach(item => {
+            if (item.firebaseId) {
+              batch.delete(doc(db, 'artifacts', appId, 'public', 'data', 'gallery_checkins', item.firebaseId));
+            }
+          });
+  
+          // Gửi dữ liệu theo gói
+          await safeBatchCommit(batch);
+          
+          const progress = Math.round(((i + chunk.length) / total) * 100);
+          setImportProgress(progress > 100 ? 100 : progress);
+          setImportStatusText(`Đã xóa: ${i + chunk.length} / ${total} dòng...`);
+          
+          // Nghỉ ngơi giữa các vòng lặp để mạng và RAM kịp "thở"
+          await new Promise(r => setTimeout(r, 600)); 
+        }
+  
+        setImportProgress(100);
+        setTimeout(() => { setIsProcessingData(false); alert("Đã dọn sạch toàn bộ dữ liệu thành công!"); }, 500);
+      } catch (err: any) { 
+        alert("Lỗi quá trình xóa: " + err.message); 
+        setIsProcessingData(false); 
       }
-
-      setImportProgress(100);
-      setTimeout(() => { setIsProcessingData(false); alert("Đã dọn sạch toàn bộ dữ liệu thành công!"); }, 500);
-    } catch (err: any) { 
-      alert("Lỗi quá trình xóa: " + err.message); 
-      setIsProcessingData(false); 
-    }
+    }, 150);
   };
 
   // ======================================================================
-  // CHỨC NĂNG NHẬP DỮ LIỆU TỪ EXCEL VỚI AUTO-RETRY
+  // NHẬP TỪ EXCEL (NGĂN TRÀN RAM, KHÔNG BỊ TREO IM LẶNG)
   // ======================================================================
-  const processCSV = async (csvText: string) => {
+  const processCSV = (csvText: string) => {
+    // 1. GIẢI PHÓNG RAM CỰC MẠNH BẰNG CÁCH XÓA STATE HIỂN THỊ
+    setCheckIns([]); 
     setIsProcessingData(true);
     setImportProgress(0);
-    setImportStatusText("Đang phân tích định dạng tệp...");
+    setImportStatusText("Đang dọn dẹp bộ nhớ và đọc tệp...");
     
-    const rows = parseCSVFull(csvText);
-    if (rows.length < 2) { 
-      setIsProcessingData(false); 
-      alert("Tệp của bạn có vẻ rỗng hoặc không đúng định dạng CSV.");
-      return; 
-    }
+    // 2. Ép hàm vào SetTimeout để nhường luồng xử lý cho Giao diện Loading kịp hiện lên
+    setTimeout(async () => {
+      try {
+        const rows = parseCSVFull(csvText);
+        if (rows.length < 2) { 
+          setIsProcessingData(false); 
+          alert("Tệp của bạn có vẻ rỗng hoặc không đúng định dạng CSV.");
+          return; 
+        }
 
-    const headers = rows[0].map(h => h.toLowerCase().trim());
-    
-    const idx = {
-      ts: headers.findIndex(h => h.includes("dấu thời gian") || h.includes("timestamp")),
-      date: headers.findIndex(h => h.includes("ngày tham quan") || h === "ngày"),
-      agency: headers.findIndex(h => h.includes("tên đơn vị") || h.includes("đại lý")),
-      staff: headers.findIndex(h => h.includes("họ và tên cv") || h.includes("họ tên cv")),
-      sPhone: headers.findIndex(h => h.includes("điện thoại cv") || h.includes("sđt cv")),
-      cName: headers.findIndex(h => h.includes("tên khách")),
-      cCount: headers.findIndex(h => h.includes("số lượng khách")),
-      cPhone: headers.findIndex(h => h.includes("điện thoại kh") || h.includes("sđt kh")),
-      age: headers.findIndex(h => h.includes("tuổi")),
-      sCount: headers.findIndex(h => h.includes("số lượng cv"))
-    };
+        const headers = rows[0].map(h => h.toLowerCase().trim());
+        const idx = {
+          ts: headers.findIndex(h => h.includes("dấu thời gian") || h.includes("timestamp")),
+          date: headers.findIndex(h => h.includes("ngày tham quan") || h === "ngày"),
+          agency: headers.findIndex(h => h.includes("tên đơn vị") || h.includes("đại lý")),
+          staff: headers.findIndex(h => h.includes("họ và tên cv") || h.includes("họ tên cv")),
+          sPhone: headers.findIndex(h => h.includes("điện thoại cv") || h.includes("sđt cv")),
+          cName: headers.findIndex(h => h.includes("tên khách")),
+          cCount: headers.findIndex(h => h.includes("số lượng khách")),
+          cPhone: headers.findIndex(h => h.includes("điện thoại kh") || h.includes("sđt kh")),
+          age: headers.findIndex(h => h.includes("tuổi")),
+          sCount: headers.findIndex(h => h.includes("số lượng cv"))
+        };
 
-    const dataRows = rows.slice(1);
-    const total = dataRows.length;
-    let validCount = 0;
-    const baseTimestamp = Date.now();
+        const dataRows = rows.slice(1);
+        const total = dataRows.length;
+        let validCount = 0;
+        const baseTimestamp = Date.now();
 
-    try {
-      // Dùng gói 100 (Cực an toàn) + Retry 3 lần. Dù mạng chậm thế nào cũng nạp xong.
-      const chunkSize = 100; 
-      
-      for (let i = 0; i < total; i += chunkSize) {
-        const batch = writeBatch(db);
-        const currentChunk = dataRows.slice(i, i + chunkSize);
+        const chunkSize = 200; // Mức đẩy an toàn, chuẩn xác
         
-        currentChunk.forEach((row, subIdx) => {
-          if (row.length < 3) return; 
-
-          const getStr = (index: number) => (index !== -1 && row[index] !== undefined && row[index] !== null) ? String(row[index]).trim() : '';
-          const getNum = (index: number, def: number) => { 
-            const val = getStr(index); 
-            const n = parseInt(val); 
-            return isNaN(n) ? def : n; 
-          };
-
-          let dateStr = "";
-          const rawDate = getStr(idx.date) || getStr(idx.ts);
-          if (rawDate) {
-            const mYMD = rawDate.match(/(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
-            const mDMY = rawDate.match(/(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})/);
-            if (mYMD) dateStr = `${mYMD[1]}-${mYMD[2].padStart(2, '0')}-${mYMD[3].padStart(2, '0')}`;
-            else if (mDMY) dateStr = `${mDMY[3]}-${mDMY[2].padStart(2, '0')}-${mDMY[1].padStart(2, '0')}`;
-          }
-          if (!dateStr) dateStr = getLocalDateString(new Date());
-
-          const customerCountVal = getNum(idx.cCount, 0);
-
-          const docData = {
-            id: baseTimestamp + i + subIdx, 
-            date: dateStr, 
-            timestamp: getStr(idx.ts) || dateStr || '',
-            agencyName: getStr(idx.agency) || 'Không xác định', 
-            staffName: getStr(idx.staff) || 'Không xác định',
-            staffPhone: getStr(idx.sPhone).slice(-4) || 'N/A', 
-            staffCount: getNum(idx.sCount, 1),
-            customerName: getStr(idx.cName) || '', 
-            customerCount: customerCountVal,
-            customerPhone: getStr(idx.cPhone).slice(-4) || '', 
-            customerAge: getStr(idx.age) || '',
-            hasCustomer: customerCountVal > 0, 
-            isImported: true
-          };
+        for (let i = 0; i < total; i += chunkSize) {
+          const batch = writeBatch(db);
+          const currentChunk = dataRows.slice(i, i + chunkSize);
           
-          batch.set(doc(collection(db, 'artifacts', appId, 'public', 'data', 'gallery_checkins')), docData);
-          validCount++;
-        });
+          currentChunk.forEach((row, subIdx) => {
+            if (row.length < 3) return; 
 
-        // Bọc trong cỗ máy Tự động thử lại khi kẹt
-        await commitBatchWithRetry(batch);
-        
-        const progress = Math.round(((i + currentChunk.length) / total) * 100);
-        setImportProgress(progress > 100 ? 100 : progress);
-        setImportStatusText(`Đã nhập: ${validCount} / ${total} dòng...`);
-        
-        // Nghỉ 0.5s giữa các gói
-        await new Promise(r => setTimeout(r, 500));
-      }
+            const getStr = (index: number) => (index !== -1 && row[index] !== undefined && row[index] !== null) ? String(row[index]).trim() : '';
+            const getNum = (index: number, def: number) => { 
+              const val = getStr(index); 
+              const n = parseInt(val); 
+              return isNaN(n) ? def : n; 
+            };
 
-      setImportProgress(100);
-      setTimeout(() => { 
+            let dateStr = "";
+            const rawDate = getStr(idx.date) || getStr(idx.ts);
+            if (rawDate) {
+              const mYMD = rawDate.match(/(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+              const mDMY = rawDate.match(/(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})/);
+              if (mYMD) dateStr = `${mYMD[1]}-${mYMD[2].padStart(2, '0')}-${mYMD[3].padStart(2, '0')}`;
+              else if (mDMY) dateStr = `${mDMY[3]}-${mDMY[2].padStart(2, '0')}-${mDMY[1].padStart(2, '0')}`;
+            }
+            if (!dateStr) dateStr = getLocalDateString(new Date());
+
+            const customerCountVal = getNum(idx.cCount, 0);
+
+            const docData = {
+              id: baseTimestamp + i + subIdx, 
+              date: dateStr, 
+              timestamp: getStr(idx.ts) || dateStr || '',
+              agencyName: getStr(idx.agency) || 'Không xác định', 
+              staffName: getStr(idx.staff) || 'Không xác định',
+              staffPhone: getStr(idx.sPhone).slice(-4) || 'N/A', 
+              staffCount: getNum(idx.sCount, 1),
+              customerName: getStr(idx.cName) || '', 
+              customerCount: customerCountVal,
+              customerPhone: getStr(idx.cPhone).slice(-4) || '', 
+              customerAge: getStr(idx.age) || '',
+              hasCustomer: customerCountVal > 0, 
+              isImported: true
+            };
+            
+            batch.set(doc(collection(db, 'artifacts', appId, 'public', 'data', 'gallery_checkins')), docData);
+            validCount++;
+          });
+
+          // Đẩy gói dữ liệu lên Cloud
+          await safeBatchCommit(batch);
+          
+          const progress = Math.round(((i + currentChunk.length) / total) * 100);
+          setImportProgress(progress > 100 ? 100 : progress);
+          setImportStatusText(`Đã nhập: ${validCount} / ${total} dòng...`);
+          
+          // NHỊP NGHỈ VÀNG 0.6s: Chống tràn bộ nhớ ngầm của Trình duyệt (GC Pause)
+          await new Promise(r => setTimeout(r, 600));
+        }
+
+        setImportProgress(100);
+        setTimeout(() => { 
+          setIsProcessingData(false); 
+          alert(`Hoàn tất xuất sắc! Đã tải thành công ${validCount} dữ liệu vào hệ thống.`); 
+          setAdminSubTab('list'); 
+        }, 600);
+        
+      } catch (err: any) { 
         setIsProcessingData(false); 
-        alert(`Hoàn tất xuất sắc! Đã tải thành công ${validCount} dữ liệu vào hệ thống.`); 
-        setAdminSubTab('list'); 
-      }, 600);
-      
-    } catch (err: any) { 
-      alert("Quá trình nhập bị gián đoạn: " + err.message); 
-      setIsProcessingData(false); 
-    }
+        alert("Quá trình bị kẹt mạng: " + err.message); 
+      }
+    }, 150);
   };
 
   const handleManualSubmit = async (e: React.FormEvent) => {
