@@ -16,7 +16,8 @@ import {
   AlertTriangle,
   ChevronLeft,
   ChevronRight,
-  Search
+  Search,
+  Loader2
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { 
