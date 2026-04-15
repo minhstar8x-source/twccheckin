@@ -78,6 +78,19 @@ const AGE_COLORS: Record<string, string> = {
   '< 25': 'bg-rose-400', '25-35': 'bg-amber-400', '36-45': 'bg-emerald-400', '46-55': 'bg-blue-400', '> 55': 'bg-violet-400', 'Khác': 'bg-slate-400'
 };
 
+const LOCATION_GROUPS = ['Tp Hồ Chí Minh', 'Tây Ninh', 'Hà Nội', 'Đông Nam Bộ', 'Tây Nam Bộ', 'Miền Trung', 'Miền Bắc', 'Người nước ngoài', 'Khác'];
+const LOCATION_COLORS: Record<string, string> = {
+  'Tp Hồ Chí Minh': 'bg-sky-400', 
+  'Tây Ninh': 'bg-orange-400', 
+  'Hà Nội': 'bg-red-400', 
+  'Đông Nam Bộ': 'bg-teal-400', 
+  'Tây Nam Bộ': 'bg-lime-400', 
+  'Miền Trung': 'bg-yellow-400', 
+  'Miền Bắc': 'bg-indigo-400', 
+  'Người nước ngoài': 'bg-pink-400',
+  'Khác': 'bg-slate-400'
+};
+
 const App = () => {
   const [activeTab, setActiveTab] = useState(() => (typeof localStorage !== 'undefined' ? localStorage.getItem('twc_activeTab') || 'checkin' : 'checkin'));
   useEffect(() => localStorage.setItem('twc_activeTab', activeTab), [activeTab]);
@@ -95,7 +108,7 @@ const App = () => {
   useEffect(() => localStorage.setItem('twc_adminSubTab', adminSubTab), [adminSubTab]);
 
   const [chartView, setChartView] = useState<'day' | 'week' | 'month'>('day'); 
-  const [chartMetric, setChartMetric] = useState<'role' | 'age'>('role');
+  const [chartMetric, setChartMetric] = useState<'role' | 'age' | 'location'>('role');
   const [chartFocusDate, setChartFocusDate] = useState(() => getLocalDateString(new Date()));
   const [filterDate, setFilterDate] = useState(''); 
   const [filterType, setFilterType] = useState('all'); 
@@ -285,6 +298,7 @@ const App = () => {
         const ds = getLocalDateString(dt); 
         dataMap[ds] = { key: ds, label: `${dt.getDate()}/${dt.getMonth()+1}`, sortIndex: i, customers: 0, staff: 0 };
         AGE_GROUPS.forEach(ag => dataMap[ds][ag] = 0);
+        LOCATION_GROUPS.forEach(lg => dataMap[ds][`loc_${lg}`] = 0);
       }
     } else if (chartView === 'week') {
       const monthStart = new Date(baseDate.getFullYear(), baseDate.getMonth(), 1);
@@ -295,6 +309,7 @@ const App = () => {
         const k = `w-${i}`; 
         dataMap[k] = { key: k, label: `Từ ${s.getDate()}/${s.getMonth()+1}`, sortIndex: i, customers: 0, staff: 0, sDate: new Date(s), eDate: new Date(e) };
         AGE_GROUPS.forEach(ag => dataMap[k][ag] = 0);
+        LOCATION_GROUPS.forEach(lg => dataMap[k][`loc_${lg}`] = 0);
       }
     } else {
       for (let i = -3; i <= 2; i++) {
@@ -302,6 +317,7 @@ const App = () => {
         const k = `${dt.getFullYear()}-${dt.getMonth() + 1}`; 
         dataMap[k] = { key: k, label: `T${dt.getMonth() + 1}`, sortIndex: i + 3, customers: 0, staff: 0 };
         AGE_GROUPS.forEach(ag => dataMap[k][ag] = 0);
+        LOCATION_GROUPS.forEach(lg => dataMap[k][`loc_${lg}`] = 0);
       }
     }
 
@@ -320,7 +336,12 @@ const App = () => {
 
       if (bucket) {
         bucket.customers += (item.customerCount || 0); bucket.staff += (item.staffCount || 0);
-        if (item.hasCustomer) bucket[normalizeAge(item.customerAge)] += (item.customerCount || 0);
+        if (item.hasCustomer) {
+            bucket[normalizeAge(item.customerAge)] += (item.customerCount || 0);
+            const locKey = `loc_${item.customerLocation || 'Khác'}`;
+            if (bucket[locKey] !== undefined) bucket[locKey] += (item.customerCount || 0);
+            else bucket['loc_Khác'] += (item.customerCount || 0);
+        }
       }
     });
     return Object.values(dataMap).sort((a: any, b: any) => a.sortIndex - b.sortIndex);
@@ -328,9 +349,14 @@ const App = () => {
 
   const maxChartValue = useMemo(() => {
     if (chartData.length === 0) return 5;
-    const base = chartMetric === 'role' 
-      ? Math.max(...chartData.map((d: any) => Math.max(d.customers, d.staff))) 
-      : Math.max(...chartData.map((d: any) => AGE_GROUPS.reduce((s, ag) => s + d[ag], 0)));
+    let base = 5;
+    if (chartMetric === 'role') {
+        base = Math.max(...chartData.map((d: any) => Math.max(d.customers, d.staff)));
+    } else if (chartMetric === 'age') {
+        base = Math.max(...chartData.map((d: any) => AGE_GROUPS.reduce((s, ag) => s + d[ag], 0)));
+    } else {
+        base = Math.max(...chartData.map((d: any) => LOCATION_GROUPS.reduce((s, lg) => s + d[`loc_${lg}`], 0)));
+    }
     return Math.ceil(Math.max(base, 5) * 1.25);
   }, [chartData, chartMetric]);
 
@@ -415,10 +441,10 @@ const App = () => {
                         </select>
                       </div>
 
-                      <div className="space-y-2 md:col-span-2">
-                        <label className="text-sm font-semibold text-slate-700 flex items-center gap-1">Khách hàng đến từ</label>
-                        <select name="customerLocation" required={hasCustomer} value={formData.customerLocation} onChange={handleInputChange} className="w-full px-4 py-3 border border-orange-200 rounded-lg bg-white focus:ring-2 focus:ring-orange-400 outline-none font-medium">
-                          <option value="" disabled>Chọn khu vực</option>
+                      <div className="space-y-3 md:col-span-2 flex flex-col items-center justify-center">
+                        <label className="text-sm font-bold text-[#c2410c] uppercase tracking-wide">Khách hàng đến từ</label>
+                        <select name="customerLocation" required={hasCustomer} value={formData.customerLocation} onChange={handleInputChange} className="w-full max-w-md px-4 py-3 border-2 border-orange-200 rounded-xl bg-white focus:ring-4 focus:ring-orange-100 focus:border-orange-400 outline-none font-bold text-center text-slate-700 transition-all shadow-sm">
+                          <option value="" disabled>--- Chọn khu vực ---</option>
                           <option value="Tp Hồ Chí Minh">Tp Hồ Chí Minh</option>
                           <option value="Tây Ninh">Tây Ninh</option>
                           <option value="Hà Nội">Hà Nội</option>
@@ -467,7 +493,32 @@ const App = () => {
 
                     {/* SUBTAB 2: THỐNG KÊ */}
                     {adminSubTab === 'chart' && (
-                      <div className="bg-white p-6 rounded-xl shadow-sm border animate-in fade-in"><div className="flex flex-col xl:flex-row justify-between items-start xl:items-center mb-8 gap-4"><div className="flex items-center space-x-3"><BarChart3 size={24} className="text-[#ea580c]" /><div><h3 className="font-bold text-lg text-slate-800">Thống kê lưu lượng</h3></div></div><div className="flex flex-wrap items-center gap-3 w-full xl:w-auto"><div className="flex bg-slate-100 p-1 rounded-lg mr-2 border"><button onClick={() => setChartMetric('role')} className={`px-3 py-1.5 text-xs font-bold rounded-md ${chartMetric === 'role' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Theo Vai trò</button><button onClick={() => setChartMetric('age')} className={`px-3 py-1.5 text-xs font-bold rounded-md ${chartMetric === 'age' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Theo Độ tuổi</button></div><div className="flex items-center space-x-2 bg-slate-100 p-1.5 rounded-lg border"><button onClick={() => { const d = new Date(chartFocusDate); d.setDate(d.getDate() - (chartView === 'day' ? 7 : 30)); setChartFocusDate(getLocalDateString(d)); }} className="p-1 hover:bg-white rounded shadow-sm"><ChevronLeft size={16} /></button><input type="date" value={chartFocusDate} onChange={(e) => setChartFocusDate(e.target.value)} className="bg-transparent text-xs font-bold outline-none border-none w-28 text-center" /><button onClick={() => { const d = new Date(chartFocusDate); d.setDate(d.getDate() + (chartView === 'day' ? 7 : 30)); setChartFocusDate(getLocalDateString(d)); }} className="p-1 hover:bg-white rounded shadow-sm"><ChevronRight size={16} /></button></div><div className="flex bg-slate-100 p-1 rounded-lg border">{['day', 'week', 'month'].map((v: any) => (<button key={v} onClick={() => setChartView(v)} className={`px-4 py-1.5 text-xs font-bold rounded-md ${chartView === v ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500'}`}>{v === 'day' ? 'Tuần' : v === 'week' ? 'Tháng' : 'Năm'}</button>))}</div></div></div><div id="admin-chart-container" className="bg-slate-900 rounded-2xl pt-12 pr-6 pb-2 pl-2 border border-slate-800 shadow-inner relative overflow-hidden"><div className="absolute top-6 right-6 flex flex-wrap justify-end gap-3 text-[10px] font-bold z-20 bg-slate-800/80 px-3 py-1.5 rounded-lg border border-slate-700/50 backdrop-blur-sm">{chartMetric === 'role' ? (<><div className="flex items-center space-x-1.5 text-orange-400"><div className="w-2.5 h-2.5 bg-orange-500 rounded-sm shadow-[0_0_8px_rgba(234,88,12,0.8)]"></div><span>Khách</span></div><div className="flex items-center space-x-1.5 text-cyan-400"><div className="w-2.5 h-2.5 bg-cyan-500 rounded-sm shadow-[0_0_8px_rgba(6,182,212,0.8)]"></div><span>CVKD</span></div></>) : (AGE_GROUPS.map(ag => (<div key={ag} className="flex items-center space-x-1.5 text-slate-200"><div className={`w-2.5 h-2.5 rounded-sm ${AGE_COLORS[ag]}`}></div><span>{ag}</span></div>)))}</div><div className="h-80 flex relative pl-16 pr-4 pb-12 pt-12"><div className="absolute top-0 left-4 text-cyan-500 font-bold text-[10px] uppercase opacity-60 tracking-widest">Số lượng</div><div className="absolute top-12 bottom-12 left-0 w-14 flex flex-col justify-between items-end pr-2 pointer-events-none">{[maxChartValue, Math.ceil(maxChartValue * 0.75), Math.ceil(maxChartValue * 0.5), Math.ceil(maxChartValue * 0.25), 0].map((val: number, idx: number) => (<span key={idx} className="text-[10px] text-slate-400 font-bold leading-none translate-y-1/2">{val}</span>))}</div><div className="flex-1 relative border-l-[3px] border-b-[3px] border-slate-600 shadow-[0_0_15px_rgba(71,85,105,0.3)]"><div className="absolute inset-0 flex flex-col justify-between pointer-events-none">{[0, 1, 2, 3, 4].map((_: number, idx: number) => (<div key={idx} className="w-full border-t border-slate-700/40 border-dashed"></div>))}</div><div className="absolute inset-0 flex items-end justify-around">{chartData.map((d: any) => { const st = AGE_GROUPS.reduce((s, ag) => s + d[ag], 0); return (<div key={d.key} className="flex flex-col items-center flex-1 h-full relative group justify-end pb-[1px]">{chartMetric === 'role' ? (<div className="flex items-end justify-center space-x-1 sm:space-x-2 w-full h-full relative z-10"><div style={{ height: `${d.customers === 0 ? 0 : Math.max((d.customers / maxChartValue) * 100, 3)}%` }} className="w-full max-w-[28px] bg-gradient-to-t from-orange-600 to-orange-400 rounded-t-sm relative transition-all group-hover:brightness-125 shadow-[0_0_8px_rgba(234,88,12,0.4)]">{d.customers > 0 && <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[10px] font-bold text-orange-400">{d.customers}</span>}</div><div style={{ height: `${d.staff === 0 ? 0 : Math.max((d.staff / maxChartValue) * 100, 3)}%` }} className="w-full max-w-[28px] bg-gradient-to-t from-cyan-600 to-cyan-400 rounded-t-sm relative transition-all group-hover:brightness-125 shadow-[0_0_8px_rgba(6,182,212,0.4)]">{d.staff > 0 && <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[10px] font-bold text-cyan-400">{d.staff}</span>}</div></div>) : (<div className="flex flex-col-reverse items-center justify-start w-full h-full relative z-10 max-w-[32px]">{AGE_GROUPS.map(ag => { const v = d[ag]; if (v === 0) return null; const hp = (v / maxChartValue) * 100; return (<div key={ag} style={{ height: `${hp}%` }} className={`w-full ${AGE_COLORS[ag]} relative border-t border-slate-900/30 transition-all flex items-center justify-center min-h-[4px]`}>{hp > 6 && <span className="text-[9px] font-bold text-slate-900">{v}</span>}</div>) })} {st > 0 && <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[10px] font-bold text-slate-300">{st}</span>}</div>)}<span className="absolute -bottom-8 text-[9px] font-bold text-slate-400 text-center w-full whitespace-nowrap overflow-hidden text-ellipsis">{d.label}</span></div>) })}</div></div></div></div></div>
+                      <div className="bg-white p-6 rounded-xl shadow-sm border animate-in fade-in"><div className="flex flex-col xl:flex-row justify-between items-start xl:items-center mb-8 gap-4"><div className="flex items-center space-x-3"><BarChart3 size={24} className="text-[#ea580c]" /><div><h3 className="font-bold text-lg text-slate-800">Thống kê lưu lượng</h3></div></div><div className="flex flex-wrap items-center gap-3 w-full xl:w-auto"><div className="flex bg-slate-100 p-1 rounded-lg mr-2 border"><button onClick={() => setChartMetric('role')} className={`px-3 py-1.5 text-xs font-bold rounded-md ${chartMetric === 'role' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Theo Vai trò</button><button onClick={() => setChartMetric('age')} className={`px-3 py-1.5 text-xs font-bold rounded-md ${chartMetric === 'age' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Theo Độ tuổi</button><button onClick={() => setChartMetric('location')} className={`px-3 py-1.5 text-xs font-bold rounded-md ${chartMetric === 'location' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Theo Khu vực</button></div><div className="flex items-center space-x-2 bg-slate-100 p-1.5 rounded-lg border"><button onClick={() => { const d = new Date(chartFocusDate); d.setDate(d.getDate() - (chartView === 'day' ? 7 : 30)); setChartFocusDate(getLocalDateString(d)); }} className="p-1 hover:bg-white rounded shadow-sm"><ChevronLeft size={16} /></button><input type="date" value={chartFocusDate} onChange={(e) => setChartFocusDate(e.target.value)} className="bg-transparent text-xs font-bold outline-none border-none w-28 text-center" /><button onClick={() => { const d = new Date(chartFocusDate); d.setDate(d.getDate() + (chartView === 'day' ? 7 : 30)); setChartFocusDate(getLocalDateString(d)); }} className="p-1 hover:bg-white rounded shadow-sm"><ChevronRight size={16} /></button></div><div className="flex bg-slate-100 p-1 rounded-lg border">{['day', 'week', 'month'].map((v: any) => (<button key={v} onClick={() => setChartView(v)} className={`px-4 py-1.5 text-xs font-bold rounded-md ${chartView === v ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500'}`}>{v === 'day' ? 'Tuần' : v === 'week' ? 'Tháng' : 'Năm'}</button>))}</div></div></div><div id="admin-chart-container" className="bg-slate-900 rounded-2xl pt-12 pr-6 pb-2 pl-2 border border-slate-800 shadow-inner relative overflow-hidden"><div className="absolute top-6 right-6 flex flex-wrap justify-end gap-3 text-[10px] font-bold z-20 bg-slate-800/80 px-3 py-1.5 rounded-lg border border-slate-700/50 backdrop-blur-sm">
+                        {chartMetric === 'role' ? (
+                            <><div className="flex items-center space-x-1.5 text-orange-400"><div className="w-2.5 h-2.5 bg-orange-500 rounded-sm shadow-[0_0_8px_rgba(234,88,12,0.8)]"></div><span>Khách</span></div><div className="flex items-center space-x-1.5 text-cyan-400"><div className="w-2.5 h-2.5 bg-cyan-500 rounded-sm shadow-[0_0_8px_rgba(6,182,212,0.8)]"></div><span>CVKD</span></div></>
+                        ) : chartMetric === 'age' ? (
+                            AGE_GROUPS.map(ag => (<div key={ag} className="flex items-center space-x-1.5 text-slate-200"><div className={`w-2.5 h-2.5 rounded-sm ${AGE_COLORS[ag]}`}></div><span>{ag}</span></div>))
+                        ) : (
+                            LOCATION_GROUPS.map(lg => (<div key={lg} className="flex items-center space-x-1.5 text-slate-200"><div className={`w-2.5 h-2.5 rounded-sm ${LOCATION_COLORS[lg]}`}></div><span>{lg}</span></div>))
+                        )}
+                        </div><div className="h-80 flex relative pl-16 pr-4 pb-12 pt-12"><div className="absolute top-0 left-4 text-cyan-500 font-bold text-[10px] uppercase opacity-60 tracking-widest">Số lượng</div><div className="absolute top-12 bottom-12 left-0 w-14 flex flex-col justify-between items-end pr-2 pointer-events-none">{[maxChartValue, Math.ceil(maxChartValue * 0.75), Math.ceil(maxChartValue * 0.5), Math.ceil(maxChartValue * 0.25), 0].map((val: number, idx: number) => (<span key={idx} className="text-[10px] text-slate-400 font-bold leading-none translate-y-1/2">{val}</span>))}</div><div className="flex-1 relative border-l-[3px] border-b-[3px] border-slate-600 shadow-[0_0_15px_rgba(71,85,105,0.3)]"><div className="absolute inset-0 flex flex-col justify-between pointer-events-none">{[0, 1, 2, 3, 4].map((_: number, idx: number) => (<div key={idx} className="w-full border-t border-slate-700/40 border-dashed"></div>))}</div><div className="absolute inset-0 flex items-end justify-around">{chartData.map((d: any) => { 
+                        return (<div key={d.key} className="flex flex-col items-center flex-1 h-full relative group justify-end pb-[1px]">
+                          {chartMetric === 'role' ? (
+                            <div className="flex items-end justify-center space-x-1 sm:space-x-2 w-full h-full relative z-10">
+                              <div style={{ height: `${d.customers === 0 ? 0 : Math.max((d.customers / maxChartValue) * 100, 3)}%` }} className="w-full max-w-[28px] bg-gradient-to-t from-orange-600 to-orange-400 rounded-t-sm relative transition-all group-hover:brightness-125 shadow-[0_0_8px_rgba(234,88,12,0.4)]">{d.customers > 0 && <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[10px] font-bold text-orange-400">{d.customers}</span>}</div>
+                              <div style={{ height: `${d.staff === 0 ? 0 : Math.max((d.staff / maxChartValue) * 100, 3)}%` }} className="w-full max-w-[28px] bg-gradient-to-t from-cyan-600 to-cyan-400 rounded-t-sm relative transition-all group-hover:brightness-125 shadow-[0_0_8px_rgba(6,182,212,0.4)]">{d.staff > 0 && <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[10px] font-bold text-cyan-400">{d.staff}</span>}</div>
+                            </div>
+                          ) : chartMetric === 'age' ? (
+                            <div className="flex flex-col-reverse items-center justify-start w-full h-full relative z-10 max-w-[32px]">
+                              {AGE_GROUPS.map(ag => { const v = d[ag]; if (v === 0) return null; const hp = (v / maxChartValue) * 100; return (<div key={ag} style={{ height: `${hp}%` }} className={`w-full ${AGE_COLORS[ag]} relative border-t border-slate-900/30 transition-all flex items-center justify-center min-h-[4px]`}>{hp > 6 && <span className="text-[9px] font-bold text-slate-900">{v}</span>}</div>) })}
+                            </div>
+                          ) : (
+                            <div className="flex flex-col-reverse items-center justify-start w-full h-full relative z-10 max-w-[32px]">
+                              {LOCATION_GROUPS.map(lg => { const v = d[`loc_${lg}`]; if (v === 0) return null; const hp = (v / maxChartValue) * 100; return (<div key={lg} style={{ height: `${hp}%` }} className={`w-full ${LOCATION_COLORS[lg]} relative border-t border-slate-900/30 transition-all flex items-center justify-center min-h-[4px]`}>{hp > 6 && <span className="text-[9px] font-bold text-slate-900">{v}</span>}</div>) })}
+                            </div>
+                          )}
+                          <span className="absolute -bottom-8 text-[9px] font-bold text-slate-400 text-center w-full whitespace-nowrap overflow-hidden text-ellipsis">{d.label}</span>
+                        </div>) })}</div></div></div></div></div>
                     )}
 
                     {/* SUBTAB 3: HỆ THỐNG */}
