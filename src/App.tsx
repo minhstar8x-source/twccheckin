@@ -17,7 +17,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Search,
-  Loader2
+  Loader2,
+  MapPin
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { 
@@ -37,12 +38,12 @@ const ROOT_ADMIN_EMAIL = 'minhpv@thangloigroup.vn';
 const BANNER_IMAGE_URL = 'https://i.postimg.cc/7hQSRb42/660431692-122180502596789445-5003665343564458581-n.jpg';
 
 const MY_FIREBASE_CONFIG = {
-  apiKey: "AIzaSyBe_LmvyTLaicrXpY1-VVoyyz2J9MexMws",
-  authDomain: "thangloihomesgallerycheckin.firebaseapp.com",
-  projectId: "thangloihomesgallerycheckin",
-  storageBucket: "thangloihomesgallerycheckin.firebasestorage.app",
-  messagingSenderId: "379103774620",
-  appId: "1:379103774620:web:c3647bde9faa6385806a59"
+  apiKey: "AIzaSyC6Lr-MmSHB2MsrOjlod_IaDDR_SoLxlZE",
+  authDomain: "gallerycheckin-f6428.firebaseapp.com",
+  projectId: "gallerycheckin-f6428",
+  storageBucket: "gallerycheckin-f6428.firebasestorage.app",
+  messagingSenderId: "174212194011",
+  appId: "1:174212194011:web:e15d6844ef11b4f71476fe"
 };
 
 // --- KHỞI TẠO FIREBASE ---
@@ -155,25 +156,30 @@ const App = () => {
 
   // FORM ĐĂNG KÝ
   const [hasCustomer, setHasCustomer] = useState(true);
-  const initialFormState = { agencyName: '', staffName: '', staffPhone: '', staffCount: 1, customerName: '', customerPhone: '', customerCount: 1, customerAge: '' };
+  const initialFormState = { 
+    agencyName: '', staffName: '', staffPhone: '', staffCount: 1, 
+    customerName: '', customerPhone: '', customerCount: 1, customerAge: '', customerLocation: '' 
+  };
   const [formData, setFormData] = useState(initialFormState);
 
   const isFormValid = useMemo(() => {
-    // Đã sửa: Nới lỏng kiểm tra để cho phép >= 4 ký tự
     const staffOk = formData.agencyName.trim() !== '' && formData.staffName.trim() !== '' && formData.staffPhone.length >= 4;
     if (!hasCustomer) return staffOk;
-    return staffOk && formData.customerName.trim() !== '' && formData.customerPhone.length >= 4 && formData.customerAge !== '';
+    return staffOk && formData.customerName.trim() !== '' && formData.customerPhone.length >= 4 && formData.customerAge !== '' && formData.customerLocation !== '';
   }, [formData, hasCustomer]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
-    // Chỉ cho phép nhập số vào ô điện thoại
     if ((name === 'staffPhone' || name === 'customerPhone') && !/^[0-9]*$/.test(value)) return;
     setFormData({ ...formData, [name]: value });
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!user) {
+      alert("Hệ thống đang kết nối đến máy chủ, vui lòng đợi vài giây và bấm lại.");
+      return;
+    }
     setIsSubmitting(true);
     const today = new Date();
     const newCheckIn = { 
@@ -188,10 +194,14 @@ const App = () => {
       customerName: hasCustomer ? formData.customerName.trim() : '',
       customerPhone: hasCustomer ? formData.customerPhone : '',
       customerAge: hasCustomer ? formData.customerAge : '',
+      customerLocation: hasCustomer ? formData.customerLocation : '',
       customerCount: hasCustomer ? parseInt(String(formData.customerCount)) || 0 : 0,
     };
     try {
-      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'gallery_checkins'), newCheckIn);
+      await Promise.race([
+        addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'gallery_checkins'), newCheckIn),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Mạng kết nối chậm hoặc bị gián đoạn, vui lòng thử lại.")), 15000))
+      ]);
       setShowSuccess(true); 
       setFormData(initialFormState); 
       setHasCustomer(true); 
@@ -210,7 +220,7 @@ const App = () => {
     const manualData = { 
       id: Date.now(), date: manualDate, timestamp: manualDate, 
       agencyName: 'Bổ sung', staffName: 'Admin', staffPhone: '0000', staffCount: manualStaff, 
-      customerName: manualCustomer > 0 ? 'Khách Bổ sung' : '', customerPhone: '', customerCount: manualCustomer, customerAge: 'Khác', 
+      customerName: manualCustomer > 0 ? 'Khách Bổ sung' : '', customerPhone: '', customerCount: manualCustomer, customerAge: 'Khác', customerLocation: 'Khác',
       hasCustomer: manualCustomer > 0, isManual: true 
     };
     try { 
@@ -326,10 +336,14 @@ const App = () => {
   }, [chartData, chartMetric]);
 
   const exportToExcel = () => {
-    const headers = ['Thời gian', 'Đơn vị', 'CVKD', 'SĐT CV', 'SL CVKD', 'Khách hàng', 'SĐT Khách', 'Tuổi Khách', 'SL Khách', 'Tổng'];
+    const headers = ['Thời gian', 'Đơn vị', 'CVKD', 'SĐT CV', 'SL CVKD', 'Khách hàng', 'SĐT Khách', 'Tuổi Khách', 'Khu Vực', 'SL Khách', 'Tổng'];
     const rows = filteredCheckIns.map(item => [
       `"${item.timestamp}"`, `"${item.agencyName}"`, `"${item.staffName}"`, `"${item.staffPhone}"`, item.staffCount, 
-      item.hasCustomer ? `"${item.customerName}"` : 'N/A', item.hasCustomer ? `"${item.customerPhone}"` : '', item.hasCustomer ? `"${item.customerAge}"` : '', item.customerCount, 
+      item.hasCustomer ? `"${item.customerName}"` : 'N/A', 
+      item.hasCustomer ? `"${item.customerPhone}"` : '', 
+      item.hasCustomer ? `"${item.customerAge}"` : '', 
+      item.hasCustomer ? `"${item.customerLocation || ''}"` : '', 
+      item.customerCount, 
       (item.staffCount || 0) + (item.customerCount || 0)
     ]);
     const csv = "\ufeff" + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
@@ -389,6 +403,7 @@ const App = () => {
                       <div className="space-y-2"><label className="text-sm font-semibold text-slate-700">Tên Khách Hàng</label><input type="text" name="customerName" required={hasCustomer} value={formData.customerName} onChange={handleInputChange} className="w-full px-4 py-3 border border-orange-200 rounded-lg focus:ring-2 focus:ring-orange-400 outline-none" /></div>
                       <div className="space-y-2"><label className="text-sm font-semibold text-slate-700">SĐT Khách</label><input type="text" name="customerPhone" required={hasCustomer} minLength={4} maxLength={12} placeholder="Tối thiểu 4 số cuối" value={formData.customerPhone} onChange={handleInputChange} className="w-full px-4 py-3 border border-orange-200 rounded-lg focus:ring-2 focus:ring-orange-400 outline-none" /></div>
                       <div className="space-y-2"><label className="text-sm font-semibold text-slate-700">Số lượng Khách</label><input type="number" name="customerCount" required={hasCustomer} min="1" value={formData.customerCount} onChange={handleInputChange} className="w-full px-4 py-3 border border-orange-200 rounded-lg focus:ring-2 focus:ring-orange-400 outline-none" /></div>
+                      
                       <div className="space-y-2">
                         <label className="text-sm font-semibold text-slate-700">Độ tuổi Khách</label>
                         <select name="customerAge" required={hasCustomer} value={formData.customerAge} onChange={handleInputChange} className="w-full px-4 py-3 border border-orange-200 rounded-lg bg-white focus:ring-2 focus:ring-orange-400 outline-none font-medium">
@@ -398,6 +413,21 @@ const App = () => {
                           <option value="36-45">36 - 45</option>
                           <option value="46-55">46 - 55</option>
                           <option value="Trên 55">Trên 55</option>
+                        </select>
+                      </div>
+
+                      <div className="space-y-2 md:col-span-2">
+                        <label className="text-sm font-semibold text-slate-700 flex items-center gap-1">Khách hàng đến từ</label>
+                        <select name="customerLocation" required={hasCustomer} value={formData.customerLocation} onChange={handleInputChange} className="w-full px-4 py-3 border border-orange-200 rounded-lg bg-white focus:ring-2 focus:ring-orange-400 outline-none font-medium">
+                          <option value="" disabled>Chọn khu vực</option>
+                          <option value="Tp Hồ Chí Minh">Tp Hồ Chí Minh</option>
+                          <option value="Tây Ninh">Tây Ninh</option>
+                          <option value="Hà Nội">Hà Nội</option>
+                          <option value="Đông Nam Bộ">Đông Nam Bộ</option>
+                          <option value="Tây Nam Bộ">Tây Nam Bộ</option>
+                          <option value="Miền Trung">Miền Trung</option>
+                          <option value="Miền Bắc">Miền Bắc</option>
+                          <option value="Người nước ngoài">Người nước ngoài</option>
                         </select>
                       </div>
                     </div>
@@ -433,7 +463,7 @@ const App = () => {
                         <input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)} className="px-3 py-2 text-xs border rounded-md shadow-sm outline-none text-slate-600" />
                         <select value={filterType} onChange={(e) => setFilterType(e.target.value)} className="px-3 py-2 text-xs border rounded-md shadow-sm outline-none text-slate-600"><option value="all">Tất cả</option><option value="customer_only">Có khách</option><option value="staff_only">Nội bộ</option></select>
                         <button onClick={exportToExcel} className="px-4 py-2 bg-emerald-600 text-white text-xs rounded-md flex items-center font-bold shadow-sm hover:bg-emerald-700"><Download size={14} className="mr-1"/> Excel</button>
-                      </div></div><div className="overflow-x-auto min-h-[400px]"><table className="w-full text-sm text-left"><thead className="bg-slate-100 font-bold border-b text-slate-600"><tr><th className="p-4">Thời gian</th><th className="p-4">CVKD / Đơn vị</th><th className="p-4">Khách hàng</th><th className="p-4 text-center">SL CVKD</th><th className="p-4 text-center">SL Khách</th><th className="p-4 text-center">Tổng</th><th className="p-4"></th></tr></thead><tbody>{filteredCheckIns.length === 0 ? (<tr><td colSpan={7} className="p-12 text-center text-slate-400 italic">Không tìm thấy dữ liệu</td></tr>) : (filteredCheckIns.map((item: any) => (<tr key={item.firebaseId || item.id} className="border-b hover:bg-slate-50 transition-colors"><td className="p-4 text-xs font-medium text-slate-500">{item.timestamp}</td><td className="p-4"><div className="font-bold text-slate-900">{item.staffName} <span className="text-slate-400 font-normal ml-1">({item.staffPhone})</span></div><div className="text-[#ea580c] text-xs font-medium mt-0.5">{item.agencyName}</div></td><td className="p-4">{item.hasCustomer ? (<div><div className="font-bold text-slate-900">{item.customerName} <span className="text-slate-400 font-normal ml-1">({item.customerPhone})</span></div><div className="text-xs text-slate-500 mt-0.5">Tuổi: {item.customerAge}</div></div>) : (<span className="text-slate-400 italic text-xs bg-slate-100 px-2 py-0.5 rounded border">Nội bộ</span>)}</td><td className="p-4 text-center font-semibold text-slate-700">{item.staffCount}</td><td className="p-4 text-center font-semibold text-orange-600">{item.customerCount}</td><td className="p-4 text-center font-extrabold text-[#ea580c]">{(item.staffCount || 0) + (item.customerCount || 0)}</td><td className="p-4 text-right">{adminEmail === ROOT_ADMIN_EMAIL && (<button onClick={() => handleDeleteEntry(item.firebaseId || item.id)} className="text-slate-300 hover:text-red-500 p-1"><Trash2 size={16}/></button>)}</td></tr>)))}</tbody></table></div></div>
+                      </div></div><div className="overflow-x-auto min-h-[400px]"><table className="w-full text-sm text-left"><thead className="bg-slate-100 font-bold border-b text-slate-600"><tr><th className="p-4">Thời gian</th><th className="p-4">CVKD / Đơn vị</th><th className="p-4">Khách hàng</th><th className="p-4 text-center">SL CVKD</th><th className="p-4 text-center">SL Khách</th><th className="p-4 text-center">Tổng</th><th className="p-4"></th></tr></thead><tbody>{filteredCheckIns.length === 0 ? (<tr><td colSpan={7} className="p-12 text-center text-slate-400 italic">Không tìm thấy dữ liệu</td></tr>) : (filteredCheckIns.map((item: any) => (<tr key={item.firebaseId || item.id} className="border-b hover:bg-slate-50 transition-colors"><td className="p-4 text-xs font-medium text-slate-500">{item.timestamp}</td><td className="p-4"><div className="font-bold text-slate-900">{item.staffName} <span className="text-slate-400 font-normal ml-1">({item.staffPhone})</span></div><div className="text-[#ea580c] text-xs font-medium mt-0.5">{item.agencyName}</div></td><td className="p-4">{item.hasCustomer ? (<div><div className="font-bold text-slate-900">{item.customerName} <span className="text-slate-400 font-normal ml-1">({item.customerPhone})</span></div><div className="text-xs text-slate-500 mt-0.5">Tuổi: {item.customerAge} {item.customerLocation ? `| Khu vực: ${item.customerLocation}` : ''}</div></div>) : (<span className="text-slate-400 italic text-xs bg-slate-100 px-2 py-0.5 rounded border">Nội bộ</span>)}</td><td className="p-4 text-center font-semibold text-slate-700">{item.staffCount}</td><td className="p-4 text-center font-semibold text-orange-600">{item.customerCount}</td><td className="p-4 text-center font-extrabold text-[#ea580c]">{(item.staffCount || 0) + (item.customerCount || 0)}</td><td className="p-4 text-right">{adminEmail === ROOT_ADMIN_EMAIL && (<button onClick={() => handleDeleteEntry(item.firebaseId || item.id)} className="text-slate-300 hover:text-red-500 p-1"><Trash2 size={16}/></button>)}</td></tr>)))}</tbody></table></div></div>
                     )}
 
                     {/* SUBTAB 2: THỐNG KÊ */}
