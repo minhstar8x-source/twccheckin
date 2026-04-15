@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Building2, 
   User as UserIcon, 
@@ -19,7 +19,6 @@ import {
   ChevronLeft,
   ChevronRight,
   Loader2,
-  Camera,
   Search
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
