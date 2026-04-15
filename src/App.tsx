@@ -37,12 +37,12 @@ const ROOT_ADMIN_EMAIL = 'minhpv@thangloigroup.vn';
 const BANNER_IMAGE_URL = 'https://i.postimg.cc/7hQSRb42/660431692-122180502596789445-5003665343564458581-n.jpg';
 
 const MY_FIREBASE_CONFIG = {
-  apiKey: "AIzaSyC6Lr-MmSHB2MsrOjlod_IaDDR_SoLxlZE",
-  authDomain: "gallerycheckin-f6428.firebaseapp.com",
-  projectId: "gallerycheckin-f6428",
-  storageBucket: "gallerycheckin-f6428.firebasestorage.app",
-  messagingSenderId: "174212194011",
-  appId: "1:174212194011:web:e15d6844ef11b4f71476fe"
+  apiKey: "AIzaSyBe_LmvyTLaicrXpY1-VVoyyz2J9MexMws",
+  authDomain: "thangloihomesgallerycheckin.firebaseapp.com",
+  projectId: "thangloihomesgallerycheckin",
+  storageBucket: "thangloihomesgallerycheckin.firebasestorage.app",
+  messagingSenderId: "379103774620",
+  appId: "1:379103774620:web:c3647bde9faa6385806a59"
 };
 
 // --- KHỞI TẠO FIREBASE ---
