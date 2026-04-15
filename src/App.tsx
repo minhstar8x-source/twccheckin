@@ -56,16 +56,6 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 const appId = typeof w.__app_id !== 'undefined' ? w.__app_id : 'default-app-id';
 
-// Helper: HÀM ÉP TIMEOUT CHỐNG TREO QUAY QUAY TỐI ƯU
-const commitBatchWithTimeout = (batch: any, timeoutMs = 15000) => {
-  return Promise.race([
-    batch.commit(),
-    new Promise((_, reject) => 
-      setTimeout(() => reject(new Error("Mạng chậm hoặc kẹt máy chủ, đã ngắt kết nối an toàn.")), timeoutMs)
-    )
-  ]);
-};
-
 // Helper Dates
 const getLocalDateString = (date: Date) => {
   const y = date.getFullYear();
@@ -100,14 +90,14 @@ const parseCSVFull = (text: string) => {
   for (let i = 0; i < text.length; i++) {
     const char = text[i];
     if (char === '"') {
-      if (inQuotes && text[i+1] === '"') { currentCell += '"'; i++; } // Ngoặc kép đôi bên trong
+      if (inQuotes && text[i+1] === '"') { currentCell += '"'; i++; } 
       else { inQuotes = !inQuotes; }
     } else if (char === ',' && !inQuotes) {
       currentRow.push(currentCell.trim()); currentCell = '';
     } else if ((char === '\n' || char === '\r') && !inQuotes) {
-      if (char === '\r' && text[i+1] === '\n') i++; // Xử lý \r\n
+      if (char === '\r' && text[i+1] === '\n') i++; 
       currentRow.push(currentCell.trim());
-      if (currentRow.some(c => c !== '')) rows.push(currentRow); // Chỉ lấy dòng có data
+      if (currentRow.some(c => c !== '')) rows.push(currentRow); 
       currentRow = []; currentCell = '';
     } else {
       currentCell += char;
@@ -242,7 +232,7 @@ const App = () => {
   };
 
   // ======================================================================
-  // CHỨC NĂNG XÓA DỮ LIỆU SỐ LƯỢNG LỚN (ĐÃ TỐI ƯU BULLETPROOF)
+  // CHỨC NĂNG XÓA DỮ LIỆU SỐ LƯỢNG LỚN (ĐÃ GỠ LỖI TIMEOUT)
   // ======================================================================
   const handleClearAllData = async () => {
     if (!window.confirm(`CẢNH BÁO: Xóa vĩnh viễn TOÀN BỘ ${checkIns.length} dòng dữ liệu hiện tại? Hành động này không thể hoàn tác!`)) return;
@@ -253,7 +243,7 @@ const App = () => {
     setImportStatusText("Đang dọn dẹp hệ thống...");
 
     try {
-      const chunkSize = 200; // Firebase cho 500, ta dùng 200 cho an toàn tuyệt đối
+      const chunkSize = 400; // Tăng lên 400 để xóa siêu tốc
       const total = checkIns.length;
       
       for (let i = 0; i < total; i += chunkSize) {
@@ -266,18 +256,18 @@ const App = () => {
           }
         });
 
-        await commitBatchWithTimeout(batch);
+        await batch.commit(); // Xóa timeout khắt khe, chờ Firestore tự xử lý tự do
         
         const progress = Math.round(((i + chunk.length) / total) * 100);
         setImportProgress(progress > 100 ? 100 : progress);
         setImportStatusText(`Đã xóa: ${i + chunk.length} / ${total} dòng...`);
         
-        // Nhường quyền ưu tiên cho trình duyệt (yield to main thread)
-        await new Promise(r => setTimeout(r, 200)); 
+        // Nghỉ 1 giây giữa các gói để mạng không bị nghẽn
+        await new Promise(r => setTimeout(r, 1000)); 
       }
 
       setImportProgress(100);
-      setCheckIns([]); // Dọn rác RAM
+      setCheckIns([]); 
       setTimeout(() => { setIsProcessingData(false); alert("Đã dọn sạch toàn bộ dữ liệu thành công!"); }, 500);
     } catch (err: any) { 
       alert("Lỗi quá trình xóa: " + err.message); 
@@ -286,14 +276,13 @@ const App = () => {
   };
 
   // ======================================================================
-  // CHỨC NĂNG NHẬP DỮ LIỆU TỪ EXCEL (ĐÃ FIX LỖI UNDEFINED & TREO BROWSER)
+  // CHỨC NĂNG NHẬP DỮ LIỆU TỪ EXCEL (ĐÃ GỠ LỖI TIMEOUT NGẮT Ở 200)
   // ======================================================================
   const processCSV = async (csvText: string) => {
     setIsProcessingData(true);
     setImportProgress(0);
     setImportStatusText("Đang phân tích định dạng tệp...");
     
-    // Sử dụng thuật toán chuẩn V2
     const rows = parseCSVFull(csvText);
     if (rows.length < 2) { 
       setIsProcessingData(false); 
@@ -303,7 +292,6 @@ const App = () => {
 
     const headers = rows[0].map(h => h.toLowerCase().trim());
     
-    // Nhận diện cột thông minh hơn (phù hợp với form xuất từ Google)
     const idx = {
       ts: headers.findIndex(h => h.includes("dấu thời gian") || h.includes("timestamp")),
       date: headers.findIndex(h => h.includes("ngày tham quan") || h === "ngày"),
@@ -323,16 +311,15 @@ const App = () => {
     const baseTimestamp = Date.now();
 
     try {
-      const chunkSize = 200; 
+      const chunkSize = 400; // Tăng lên 400 dòng/gói để tối ưu tốc độ
       
       for (let i = 0; i < total; i += chunkSize) {
         const batch = writeBatch(db);
         const currentChunk = dataRows.slice(i, i + chunkSize);
         
         currentChunk.forEach((row, subIdx) => {
-          if (row.length < 3) return; // Bỏ qua dòng trống
+          if (row.length < 3) return; 
 
-          // Hàm lấy dữ liệu an toàn, ngăn chặn tuyệt đối lỗi "undefined" của Firebase
           const getStr = (index: number) => (index !== -1 && row[index] !== undefined && row[index] !== null) ? String(row[index]).trim() : '';
           const getNum = (index: number, def: number) => { 
             const val = getStr(index); 
@@ -340,22 +327,18 @@ const App = () => {
             return isNaN(n) ? def : n; 
           };
 
-          // --- Xử lý Ngày tháng phức tạp ---
           let dateStr = "";
           const rawDate = getStr(idx.date) || getStr(idx.ts);
           if (rawDate) {
-            // Hỗ trợ YYYY-MM-DD hoặc DD/MM/YYYY
             const mYMD = rawDate.match(/(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
             const mDMY = rawDate.match(/(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})/);
             if (mYMD) dateStr = `${mYMD[1]}-${mYMD[2].padStart(2, '0')}-${mYMD[3].padStart(2, '0')}`;
             else if (mDMY) dateStr = `${mDMY[3]}-${mDMY[2].padStart(2, '0')}-${mDMY[1].padStart(2, '0')}`;
           }
-          // Nếu không parse được ngày, lấy ngày hôm nay (tránh lỗi trắng biểu đồ)
           if (!dateStr) dateStr = getLocalDateString(new Date());
 
           const customerCountVal = getNum(idx.cCount, 0);
 
-          // Tạo Object dữ liệu (Cam kết không có undefined)
           const docData = {
             id: baseTimestamp + i + subIdx, 
             date: dateStr, 
@@ -376,13 +359,15 @@ const App = () => {
           validCount++;
         });
 
-        await commitBatchWithTimeout(batch);
+        // Bỏ timeout khắt khe 15 giây, để quá trình chạy hoàn toàn tự nhiên
+        await batch.commit();
         
         const progress = Math.round(((i + currentChunk.length) / total) * 100);
         setImportProgress(progress > 100 ? 100 : progress);
         setImportStatusText(`Đã nhập: ${validCount} / ${total} dòng...`);
         
-        await new Promise(r => setTimeout(r, 200));
+        // Thời gian nghỉ giữa các gói là 1 giây, cho mạng kịp "thở"
+        await new Promise(r => setTimeout(r, 1000));
       }
 
       setImportProgress(100);
@@ -427,7 +412,7 @@ const App = () => {
       processCSV(content);
     };
     reader.readAsText(file);
-    e.target.value = ''; // Reset input
+    e.target.value = ''; 
   };
 
   // CHART & FILTER LOGIC
@@ -459,7 +444,6 @@ const App = () => {
     baseDate.setHours(0,0,0,0);
 
     if (chartView === 'day') {
-      // Tuần hiện tại
       const monday = new Date(baseDate); monday.setDate(baseDate.getDate() + (baseDate.getDay() === 0 ? -6 : 1 - baseDate.getDay()));
       for (let i = 0; i < 7; i++) {
         const dt = new Date(monday); dt.setDate(monday.getDate() + i);
@@ -468,7 +452,6 @@ const App = () => {
         AGE_GROUPS.forEach(ag => dataMap[ds][ag] = 0);
       }
     } else if (chartView === 'week') {
-      // Tháng hiện tại (chia thành các tuần)
       const monthStart = new Date(baseDate.getFullYear(), baseDate.getMonth(), 1);
       const firstMonday = new Date(monthStart); firstMonday.setDate(monthStart.getDate() + (monthStart.getDay() === 0 ? -6 : 1 - monthStart.getDay()));
       for (let i = 0; i < 5; i++) {
@@ -479,7 +462,6 @@ const App = () => {
         AGE_GROUPS.forEach(ag => dataMap[k][ag] = 0);
       }
     } else {
-      // 6 Tháng gần nhất
       for (let i = -3; i <= 2; i++) {
         const dt = new Date(baseDate.getFullYear(), baseDate.getMonth() + i, 1);
         const k = `${dt.getFullYear()}-${dt.getMonth() + 1}`; 
