@@ -37,12 +37,12 @@ const ROOT_ADMIN_EMAIL = 'minhpv@thangloigroup.vn';
 const BANNER_IMAGE_URL = 'https://i.postimg.cc/7hQSRb42/660431692-122180502596789445-5003665343564458581-n.jpg';
 
 const MY_FIREBASE_CONFIG = {
-  apiKey: "AIzaSyC6Lr-MmSHB2MsrOjlod_IaDDR_SoLxlZE",
-  authDomain: "gallerycheckin-f6428.firebaseapp.com",
-  projectId: "gallerycheckin-f6428",
-  storageBucket: "gallerycheckin-f6428.firebasestorage.app",
-  messagingSenderId: "174212194011",
-  appId: "1:174212194011:web:e15d6844ef11b4f71476fe"
+  apiKey: "AIzaSyBe_LmvyTLaicrXpY1-VVoyyz2J9MexMws",
+  authDomain: "thangloihomesgallerycheckin.firebaseapp.com",
+  projectId: "thangloihomesgallerycheckin",
+  storageBucket: "thangloihomesgallerycheckin.firebasestorage.app",
+  messagingSenderId: "379103774620",
+  appId: "1:379103774620:web:c3647bde9faa6385806a59"
 };
 
 // --- KHỞI TẠO FIREBASE ---
@@ -85,6 +85,7 @@ const App = () => {
   const [checkIns, setCheckIns] = useState<any[]>([]); 
   const [showSuccess, setShowSuccess] = useState(false);
   const [user, setUser] = useState<any>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // ADMIN STATE
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
@@ -173,6 +174,7 @@ const App = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setIsSubmitting(true);
     const today = new Date();
     const newCheckIn = { 
       id: Date.now(), 
@@ -196,6 +198,8 @@ const App = () => {
       setTimeout(() => setShowSuccess(false), 3000);
     } catch(err: any) { 
       alert("Lỗi khi gửi đăng ký: " + err.message); 
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -400,7 +404,10 @@ const App = () => {
                   </div>
                 )}
                 
-                <button type="submit" disabled={!isFormValid} className={`px-10 py-4 font-bold text-lg rounded-xl shadow-lg transition-all flex items-center justify-center space-x-2 w-full sm:w-auto ${isFormValid ? 'bg-[#ea580c] text-white hover:bg-[#c2410c] hover:-translate-y-1' : 'bg-slate-300 text-slate-500 opacity-70 cursor-not-allowed'}`}><CheckCircle2 size={24} /> <span>Xác nhận Đăng Ký</span></button>
+                <button type="submit" disabled={!isFormValid || isSubmitting} className={`px-10 py-4 font-bold text-lg rounded-xl shadow-lg transition-all flex items-center justify-center space-x-2 w-full sm:w-auto ${isFormValid && !isSubmitting ? 'bg-[#ea580c] text-white hover:bg-[#c2410c] hover:-translate-y-1' : 'bg-slate-300 text-slate-500 opacity-70 cursor-not-allowed'}`}>
+                  {isSubmitting ? <Loader2 className="animate-spin" size={24} /> : <CheckCircle2 size={24} />}
+                  <span>{isSubmitting ? 'Đang gửi...' : 'Xác nhận Đăng Ký'}</span>
+                </button>
               </form>
             </div>
           </div>
