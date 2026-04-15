@@ -17,8 +17,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Search,
-  Loader2,
-  MapPin
+  Loader2
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { 
