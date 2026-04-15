@@ -14,8 +14,6 @@ import {
   Download, 
   History,
   AlertTriangle,
-  ChevronLeft,
-  ChevronRight,
   Search,
   Loader2
 } from 'lucide-react';
@@ -37,7 +35,7 @@ const ROOT_ADMIN_EMAIL = 'minhpv@thangloigroup.vn';
 const BANNER_IMAGE_URL = 'https://i.postimg.cc/7hQSRb42/660431692-122180502596789445-5003665343564458581-n.jpg';
 
 const MY_FIREBASE_CONFIG = {
-apiKey: "AIzaSyBe_LmvyTLaicrXpY1-VVoyyz2J9MexMws",
+  apiKey: "AIzaSyBe_LmvyTLaicrXpY1-VVoyyz2J9MexMws",
   authDomain: "thangloihomesgallerycheckin.firebaseapp.com",
   projectId: "thangloihomesgallerycheckin",
   storageBucket: "thangloihomesgallerycheckin.firebasestorage.app",
@@ -97,7 +95,7 @@ const App = () => {
 
   const [chartView, setChartView] = useState<'day' | 'week' | 'month'>('day'); 
   const [chartMetric, setChartMetric] = useState<'role' | 'age' | 'location'>('role');
-  const [chartFocusDate, setChartFocusDate] = useState(() => getLocalDateString(new Date()));
+  const [chartFocusDate] = useState(() => getLocalDateString(new Date()));
   const [filterDate, setFilterDate] = useState(''); 
   const [filterType, setFilterType] = useState('all'); 
   const [searchQuery, setSearchQuery] = useState('');
