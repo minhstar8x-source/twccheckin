@@ -157,9 +157,10 @@ const App = () => {
   const [formData, setFormData] = useState(initialFormState);
 
   const isFormValid = useMemo(() => {
-    const staffOk = formData.agencyName.trim() !== '' && formData.staffName.trim() !== '' && formData.staffPhone.length === 4;
+    // Đã sửa: Nới lỏng kiểm tra để cho phép >= 4 ký tự
+    const staffOk = formData.agencyName.trim() !== '' && formData.staffName.trim() !== '' && formData.staffPhone.length >= 4;
     if (!hasCustomer) return staffOk;
-    return staffOk && formData.customerName.trim() !== '' && formData.customerPhone.length === 4 && formData.customerAge !== '';
+    return staffOk && formData.customerName.trim() !== '' && formData.customerPhone.length >= 4 && formData.customerAge !== '';
   }, [formData, hasCustomer]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
@@ -354,7 +355,54 @@ const App = () => {
         
         {/* TAB 1: FORM ĐĂNG KÝ */}
         {activeTab === 'checkin' && (
-          <div className="max-w-4xl mx-auto"><div className="bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-100"><div className="w-full h-48 sm:h-72 bg-cover bg-center relative flex items-center justify-center px-4" style={{ backgroundImage: `url('${BANNER_IMAGE_URL}')` }}><div className="absolute inset-0 bg-black/55"></div><div className="relative z-10 text-center"><h2 className="text-2xl sm:text-4xl font-extrabold uppercase text-white">CHECK IN GALLERY</h2></div></div><form onSubmit={handleSubmit} className="p-6 md:p-8 space-y-8"><div className="bg-slate-50 p-6 rounded-xl border border-slate-100"><h3 className="text-base font-bold text-slate-800 uppercase mb-5 flex items-center"><span className="bg-[#ea580c] text-white p-1.5 rounded-md mr-3"><Building2 size={18} /></span> Thông tin CVKD</h3><div className="grid grid-cols-1 md:grid-cols-2 gap-6"><div className="space-y-2"><label className="text-sm font-semibold text-slate-700">Tên đơn vị</label><input type="text" name="agencyName" required value={formData.agencyName} onChange={handleInputChange} className="w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-orange-400 outline-none" /></div><div className="space-y-2"><label className="text-sm font-semibold text-slate-700">Họ và Tên CVKD</label><input type="text" name="staffName" required value={formData.staffName} onChange={handleInputChange} className="w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-orange-400 outline-none" /></div><div className="space-y-2"><label className="text-sm font-semibold text-slate-700">SĐT CVKD (4 số cuối)</label><input type="text" name="staffPhone" required minLength={4} maxLength={4} placeholder="VD: 0987" value={formData.staffPhone} onChange={handleInputChange} className="w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-orange-400 outline-none" /></div><div className="space-y-2"><label className="text-sm font-semibold text-slate-700">Số lượng CVKD đi cùng</label><input type="number" name="staffCount" required min="1" value={formData.staffCount} onChange={handleInputChange} className="w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-orange-400 outline-none" /></div></div><div className="mt-6 pt-5 border-t border-slate-200"><label className="flex items-center space-x-3 cursor-pointer group"><input type="checkbox" checked={!hasCustomer} onChange={() => setHasCustomer(!hasCustomer)} className="w-5 h-5 accent-[#ea580c] cursor-pointer" /><span className="text-slate-700 font-semibold group-hover:text-[#ea580c] select-none">Tôi không đi cùng khách hàng</span></label></div></div>{hasCustomer && (<div className="bg-orange-50/50 p-6 rounded-xl border border-orange-100 animate-in fade-in slide-in-from-top-4"><h3 className="text-base font-bold text-[#c2410c] uppercase mb-5 flex items-center"><span className="bg-[#fdba74] text-orange-900 p-1.5 rounded-md mr-3"><Users size={18} /></span> Thông tin Khách Hàng</h3><div className="grid grid-cols-1 md:grid-cols-2 gap-6"><div className="space-y-2"><label className="text-sm font-semibold text-slate-700">Tên Khách Hàng</label><input type="text" name="customerName" required={hasCustomer} value={formData.customerName} onChange={handleInputChange} className="w-full px-4 py-3 border border-orange-200 rounded-lg focus:ring-2 focus:ring-orange-400 outline-none" /></div><div className="space-y-2"><label className="text-sm font-semibold text-slate-700">SĐT Khách (4 số cuối)</label><input type="text" name="customerPhone" required={hasCustomer} minLength={4} maxLength={4} placeholder="VD: 1234" value={formData.customerPhone} onChange={handleInputChange} className="w-full px-4 py-3 border border-orange-200 rounded-lg focus:ring-2 focus:ring-orange-400 outline-none" /></div><div className="space-y-2"><label className="text-sm font-semibold text-slate-700">Số lượng Khách</label><input type="number" name="customerCount" required={hasCustomer} min="1" value={formData.customerCount} onChange={handleInputChange} className="w-full px-4 py-3 border border-orange-200 rounded-lg focus:ring-2 focus:ring-orange-400 outline-none" /></div><div className="space-y-2"><label className="text-sm font-semibold text-slate-700">Độ tuổi Khách</label><select name="customerAge" required={hasCustomer} value={formData.customerAge} onChange={handleInputChange} className="w-full px-4 py-3 border border-orange-200 rounded-lg bg-white focus:ring-2 focus:ring-orange-400 outline-none font-medium"><option value="" disabled>Chọn khoảng tuổi</option><option value="Dưới 25">Dưới 25</option><option value="25-35">25 - 35</option><option value="36-45">36 - 45</option><option value="46-55">46 - 55</option><option value="Trên 55">Trên 55</option></select></div></div></div>)}<button type="submit" disabled={!isFormValid} className={`px-10 py-4 font-bold text-lg rounded-xl shadow-lg transition-all flex items-center justify-center space-x-2 w-full sm:w-auto ${isFormValid ? 'bg-[#ea580c] text-white hover:bg-[#c2410c] hover:-translate-y-1' : 'bg-slate-300 text-slate-500 opacity-70 cursor-not-allowed'}`}><CheckCircle2 size={24} /> <span>Xác nhận Đăng Ký</span></button></form></div></div>
+          <div className="max-w-4xl mx-auto">
+            <div className="bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-100">
+              <div className="w-full h-48 sm:h-72 bg-cover bg-center relative flex items-center justify-center px-4" style={{ backgroundImage: `url('${BANNER_IMAGE_URL}')` }}>
+                <div className="absolute inset-0 bg-black/55"></div>
+                <div className="relative z-10 text-center">
+                  <h2 className="text-2xl sm:text-4xl font-extrabold uppercase text-white drop-shadow-md">CHECK IN THẮNG LỢI HOMES GALLERY</h2>
+                  <p className="mt-2 text-sm sm:text-base text-white/90 font-medium drop-shadow-sm">Vui lòng điền đầy đủ thông tin để chúng tôi tiếp đón chu đáo</p>
+                </div>
+              </div>
+              
+              <form onSubmit={handleSubmit} className="p-6 md:p-8 space-y-8">
+                <div className="bg-slate-50 p-6 rounded-xl border border-slate-100">
+                  <h3 className="text-base font-bold text-slate-800 uppercase mb-5 flex items-center"><span className="bg-[#ea580c] text-white p-1.5 rounded-md mr-3"><Building2 size={18} /></span> Thông tin CVKD</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="space-y-2"><label className="text-sm font-semibold text-slate-700">Tên đơn vị</label><input type="text" name="agencyName" required value={formData.agencyName} onChange={handleInputChange} className="w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-orange-400 outline-none" /></div>
+                    <div className="space-y-2"><label className="text-sm font-semibold text-slate-700">Họ và Tên CVKD</label><input type="text" name="staffName" required value={formData.staffName} onChange={handleInputChange} className="w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-orange-400 outline-none" /></div>
+                    <div className="space-y-2"><label className="text-sm font-semibold text-slate-700">SĐT CVKD</label><input type="text" name="staffPhone" required minLength={4} maxLength={12} placeholder="Tối thiểu 4 số cuối" value={formData.staffPhone} onChange={handleInputChange} className="w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-orange-400 outline-none" /></div>
+                    <div className="space-y-2"><label className="text-sm font-semibold text-slate-700">Số lượng CVKD đi cùng</label><input type="number" name="staffCount" required min="1" value={formData.staffCount} onChange={handleInputChange} className="w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-orange-400 outline-none" /></div>
+                  </div>
+                  <div className="mt-6 pt-5 border-t border-slate-200"><label className="flex items-center space-x-3 cursor-pointer group"><input type="checkbox" checked={!hasCustomer} onChange={() => setHasCustomer(!hasCustomer)} className="w-5 h-5 accent-[#ea580c] cursor-pointer" /><span className="text-slate-700 font-semibold group-hover:text-[#ea580c] select-none">Tôi không đi cùng khách hàng</span></label></div>
+                </div>
+                
+                {hasCustomer && (
+                  <div className="bg-orange-50/50 p-6 rounded-xl border border-orange-100 animate-in fade-in slide-in-from-top-4">
+                    <h3 className="text-base font-bold text-[#c2410c] uppercase mb-5 flex items-center"><span className="bg-[#fdba74] text-orange-900 p-1.5 rounded-md mr-3"><Users size={18} /></span> Thông tin Khách Hàng</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div className="space-y-2"><label className="text-sm font-semibold text-slate-700">Tên Khách Hàng</label><input type="text" name="customerName" required={hasCustomer} value={formData.customerName} onChange={handleInputChange} className="w-full px-4 py-3 border border-orange-200 rounded-lg focus:ring-2 focus:ring-orange-400 outline-none" /></div>
+                      <div className="space-y-2"><label className="text-sm font-semibold text-slate-700">SĐT Khách</label><input type="text" name="customerPhone" required={hasCustomer} minLength={4} maxLength={12} placeholder="Tối thiểu 4 số cuối" value={formData.customerPhone} onChange={handleInputChange} className="w-full px-4 py-3 border border-orange-200 rounded-lg focus:ring-2 focus:ring-orange-400 outline-none" /></div>
+                      <div className="space-y-2"><label className="text-sm font-semibold text-slate-700">Số lượng Khách</label><input type="number" name="customerCount" required={hasCustomer} min="1" value={formData.customerCount} onChange={handleInputChange} className="w-full px-4 py-3 border border-orange-200 rounded-lg focus:ring-2 focus:ring-orange-400 outline-none" /></div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-semibold text-slate-700">Độ tuổi Khách</label>
+                        <select name="customerAge" required={hasCustomer} value={formData.customerAge} onChange={handleInputChange} className="w-full px-4 py-3 border border-orange-200 rounded-lg bg-white focus:ring-2 focus:ring-orange-400 outline-none font-medium">
+                          <option value="" disabled>Chọn khoảng tuổi</option>
+                          <option value="Dưới 25">Dưới 25</option>
+                          <option value="25-35">25 - 35</option>
+                          <option value="36-45">36 - 45</option>
+                          <option value="46-55">46 - 55</option>
+                          <option value="Trên 55">Trên 55</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                
+                <button type="submit" disabled={!isFormValid} className={`px-10 py-4 font-bold text-lg rounded-xl shadow-lg transition-all flex items-center justify-center space-x-2 w-full sm:w-auto ${isFormValid ? 'bg-[#ea580c] text-white hover:bg-[#c2410c] hover:-translate-y-1' : 'bg-slate-300 text-slate-500 opacity-70 cursor-not-allowed'}`}><CheckCircle2 size={24} /> <span>Xác nhận Đăng Ký</span></button>
+              </form>
+            </div>
+          </div>
         )}
 
         {/* TAB 2: ADMIN AREA */}
