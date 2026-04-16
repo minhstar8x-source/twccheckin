@@ -15,7 +15,9 @@ import {
   History,
   AlertTriangle,
   Search,
-  Loader2
+  Loader2,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { 
@@ -92,10 +94,18 @@ const App = () => {
   const [adminError, setAdminError] = useState('');
   const [adminSubTab, setAdminSubTab] = useState('list');
   const [adminEmailsFromDb, setAdminEmailsFromDb] = useState<string[]>([]);
+  const [isAdminDataLoading, setIsAdminDataLoading] = useState(true);
 
+  // PROGRESS STATES
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [processingProgress, setProcessingProgress] = useState(0);
+  const [processingText, setProcessingText] = useState('');
+  const [processedCount, setProcessedCount] = useState(0);
+
+  // CHART STATES
   const [chartView, setChartView] = useState<'day' | 'week' | 'month'>('day'); 
   const [chartMetric, setChartMetric] = useState<'role' | 'age' | 'location'>('role');
-  const [chartFocusDate] = useState(() => getLocalDateString(new Date()));
+  const [chartFocusDate, setChartFocusDate] = useState(() => getLocalDateString(new Date()));
   const [filterDate, setFilterDate] = useState(''); 
   const [filterType, setFilterType] = useState('all'); 
   const [searchQuery, setSearchQuery] = useState('');
@@ -105,61 +115,78 @@ const App = () => {
   const [manualCustomer, setManualCustomer] = useState(0);
   const [newAdminEmail, setNewAdminEmail] = useState('');
 
-  // 1. LẤY DANH SÁCH ADMIN TỪ DATABASE
-  useEffect(() => {
-    const unsubscribe = onSnapshot(getAdminCollection(), (snapshot) => {
-      const emails = snapshot.docs.map(doc => doc.id);
-      if (!emails.includes(ROOT_ADMIN_EMAIL)) emails.push(ROOT_ADMIN_EMAIL);
-      setAdminEmailsFromDb(emails);
-    });
-    return () => unsubscribe();
-  }, []);
-
-  // 2. AUTH & LOGIN CHECK
+  // 1. AUTH & LOGIN CHECK
   useEffect(() => {
     const initAuth = async () => {
       if (!firebaseConfig.apiKey) return;
       try {
         await getRedirectResult(auth); 
         if (!auth.currentUser) {
-          const initToken = w.__initial_auth_token;
-          initToken ? await signInWithCustomToken(auth, initToken) : await signInAnonymously(auth);
+          if (typeof w.__initial_auth_token !== 'undefined' && w.__initial_auth_token) {
+            await signInWithCustomToken(auth, w.__initial_auth_token);
+          } else {
+            await signInAnonymously(auth);
+          }
         }
-      } catch (e) { console.error(e); }
+      } catch (e) { 
+        console.error("Lỗi xác thực Firebase:", e); 
+      }
     };
     initAuth();
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
-      if (currentUser?.email) {
-        // Kiểm tra quyền từ danh sách Db vừa tải về
-        if (adminEmailsFromDb.includes(currentUser.email)) {
-          setIsAdminLoggedIn(true);
-          setAdminEmail(currentUser.email);
-          setAdminError('');
-        } else {
-          setAdminError(`Tài khoản ${currentUser.email} không có quyền truy cập.`);
-          setIsAdminLoggedIn(false);
-          await signOut(auth);
-          await signInAnonymously(auth);
-        }
-      } else {
-        setIsAdminLoggedIn(false);
-        setAdminEmail('');
-      }
     });
     return () => unsubscribe();
-  }, [adminEmailsFromDb]);
+  }, []);
 
-  // 3. DANH SÁCH CHECK-IN
+  // 2. FIRESTORE LISTENERS
   useEffect(() => {
-    if (!user || !firebaseConfig.apiKey) return; 
-    const unsubscribe = onSnapshot(getCheckInCollection(), (snapshot) => {
+    if (!user) return;
+
+    // Listener for ADMIN LIST
+    const unsubAdmin = onSnapshot(getAdminCollection(), (snapshot) => {
+      const emails = snapshot.docs.map(doc => doc.id.toLowerCase());
+      if (!emails.includes(ROOT_ADMIN_EMAIL.toLowerCase())) emails.push(ROOT_ADMIN_EMAIL.toLowerCase());
+      setAdminEmailsFromDb(emails);
+      setIsAdminDataLoading(false);
+    }, (error) => {
+      console.error("Lỗi nạp danh sách admin từ server:", error);
+      setIsAdminDataLoading(false);
+    });
+
+    // Listener for CHECK-IN LIST
+    const unsubCheckin = onSnapshot(getCheckInCollection(), (snapshot) => {
       const data = snapshot.docs.map((doc: any) => ({ firebaseId: doc.id, ...doc.data() }));
       data.sort((a: any, b: any) => b.id - a.id); 
       setCheckIns(data);
+    }, (err) => {
+      console.error("Lỗi nạp dữ liệu check-in:", err);
     });
-    return () => unsubscribe();
+
+    return () => {
+      unsubAdmin();
+      unsubCheckin();
+    };
   }, [user]);
+
+  // 3. ADMIN PERMISSION CHECK
+  useEffect(() => {
+    if (!isAdminDataLoading && user?.email) {
+      const userEmail = user.email.toLowerCase();
+      if (adminEmailsFromDb.includes(userEmail)) {
+        setIsAdminLoggedIn(true);
+        setAdminEmail(user.email);
+        setAdminError('');
+      } else {
+        setIsAdminLoggedIn(false);
+        setAdminEmail('');
+        setAdminError(`Tài khoản ${user.email} không có quyền truy cập quản trị.`);
+      }
+    } else {
+      setIsAdminLoggedIn(false);
+      setAdminEmail('');
+    }
+  }, [adminEmailsFromDb, user, isAdminDataLoading]);
 
   // --- FORM HANDLERS ---
   const [hasCustomer, setHasCustomer] = useState(true);
@@ -180,7 +207,7 @@ const App = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user) { alert("Đang kết nối server..."); return; }
+    if (!user) { alert("Hệ thống chưa sẵn sàng, vui lòng đợi giây lát."); return; }
     setIsSubmitting(true);
     const today = new Date();
     const newDoc = { 
@@ -192,7 +219,7 @@ const App = () => {
     try {
       await Promise.race([
         addDoc(getCheckInCollection(), newDoc),
-        new Promise((_, r) => setTimeout(() => r(new Error("Timeout")), 10000))
+        new Promise((_, r) => setTimeout(() => r(new Error("Mất kết nối server.")), 10000))
       ]);
       setShowSuccess(true); setFormData(initialFormState); setHasCustomer(true); setTimeout(() => setShowSuccess(false), 3000);
     } catch(err: any) { alert("Lỗi gửi dữ liệu: " + err.message); } finally { setIsSubmitting(false); }
@@ -201,10 +228,10 @@ const App = () => {
   // --- ADMIN ACTIONS ---
   const handleAddAdmin = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!user) return;
     const email = newAdminEmail.trim().toLowerCase();
     if (email && !adminEmailsFromDb.includes(email)) {
       try {
-        // Lưu email vào Firestore Collection admin_users
         await setDoc(doc(getAdminCollection(), email), { addedAt: new Date().toISOString(), addedBy: adminEmail });
         setNewAdminEmail('');
         alert(`Đã cấp quyền cho ${email}`);
@@ -213,16 +240,17 @@ const App = () => {
   };
 
   const handleRemoveAdmin = async (email: string) => {
-    if (email === ROOT_ADMIN_EMAIL) return;
+    if (!user || email.toLowerCase() === ROOT_ADMIN_EMAIL.toLowerCase()) return;
     if (window.confirm(`Xóa quyền Admin của ${email}?`)) {
       try {
-        await deleteDoc(doc(getAdminCollection(), email));
+        await deleteDoc(doc(getAdminCollection(), email.toLowerCase()));
       } catch (e: any) { alert("Lỗi khi xóa: " + e.message); }
     }
   };
 
   const handleManualSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!user) return;
     const manualData = { 
       id: Date.now(), date: manualDate, timestamp: manualDate, agencyName: 'Bổ sung', staffName: 'Admin', staffPhone: '0000', staffCount: manualStaff, 
       customerName: manualCustomer > 0 ? 'Khách Bổ sung' : '', customerPhone: '', customerCount: manualCustomer, customerAge: 'Khác', customerLocation: 'Khác', hasCustomer: manualCustomer > 0, isManual: true 
@@ -231,18 +259,49 @@ const App = () => {
   };
 
   const handleDeleteEntry = async (id: string) => {
+    if (!user) return;
     if (window.confirm("Xóa dòng này?")) {
       try { await deleteDoc(doc(getCheckInCollection(), id)); } catch (e: any) { alert(e.message); }
     }
   };
 
   const handleClearAllData = async () => {
+    if (!user || checkIns.length === 0) return;
     if (!window.confirm(`XÓA TOÀN BỘ ${checkIns.length} DỮ LIỆU?`)) return;
+
+    setIsProcessing(true);
+    setProcessedCount(0);
+    setProcessingProgress(0);
+    setProcessingText('ĐANG CHUẨN BỊ DỌN DẸP...');
+
     try {
-      const batch = writeBatch(db);
-      checkIns.forEach(item => { if (item.firebaseId) batch.delete(doc(getCheckInCollection(), item.firebaseId)); });
-      await batch.commit(); alert("Đã xóa sạch!");
-    } catch (err: any) { alert(err.message); }
+      const collectionRef = getCheckInCollection();
+      const itemsToDelete = [...checkIns];
+      const total = itemsToDelete.length;
+      const chunkSize = 400;
+
+      for (let i = 0; i < total; i += chunkSize) {
+        const chunk = itemsToDelete.slice(i, i + chunkSize);
+        const batch = writeBatch(db);
+        
+        chunk.forEach(item => {
+          if (item.firebaseId) batch.delete(doc(collectionRef, item.firebaseId));
+        });
+
+        setProcessingText(`Đang xử lý gói ${i / chunkSize + 1}...`);
+        await batch.commit();
+
+        const currentProcessed = Math.min(i + chunkSize, total);
+        setProcessedCount(currentProcessed);
+        setProcessingProgress(Math.floor((currentProcessed / total) * 100));
+      }
+
+      setProcessingText('HOÀN TẤT DỌN DẸP!');
+      setTimeout(() => setIsProcessing(false), 2000);
+    } catch (err: any) {
+      alert("Lỗi khi xóa dữ liệu: " + err.message);
+      setIsProcessing(false);
+    }
   }
 
   // --- CHART LOGIC ---
@@ -339,14 +398,50 @@ const App = () => {
 
   const handleGoogleLogin = async () => {
     if (isCanvasEnv) { setIsAdminLoggedIn(true); setAdminEmail(ROOT_ADMIN_EMAIL); return; }
-    try { await signInWithPopup(auth, new GoogleAuthProvider()); } catch (e: any) { setAdminError(e.message); }
+    try { 
+        setIsAdminDataLoading(true); 
+        await signInWithPopup(auth, new GoogleAuthProvider()); 
+    } catch (e: any) { setAdminError(e.message); setIsAdminDataLoading(false); }
   };
 
   const handleAdminLogout = async () => { setIsAdminLoggedIn(false); setAdminEmail(''); setActiveTab('checkin'); await signOut(auth); await signInAnonymously(auth); };
 
+  // Helper để thay đổi ngày biểu đồ
+  const changeFocusDate = (days: number) => {
+    const d = new Date(chartFocusDate);
+    d.setDate(d.getDate() + days);
+    setChartFocusDate(getLocalDateString(d));
+  };
+
   return (
     <div className="min-h-screen bg-slate-100 pb-12" style={{ fontFamily: "'Be Vietnam Pro', sans-serif" }}>
       <style dangerouslySetInnerHTML={{__html: `@import url('https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&display=swap');`}} />
+
+      {/* OVERLAY XỬ LÝ DỮ LIỆU */}
+      {isProcessing && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-white/90 backdrop-blur-sm animate-in fade-in">
+          <div className="max-w-md w-full p-10 flex flex-col items-center text-center">
+            <div className="relative w-32 h-32 mb-8">
+              <svg className="w-full h-full" viewBox="0 0 100 100">
+                <circle className="text-slate-100" strokeWidth="6" stroke="currentColor" fill="transparent" r="42" cx="50" cy="50" />
+                <circle className="text-orange-600 transition-all duration-300" strokeWidth="6" strokeDasharray="264" strokeDashoffset={264 - (264 * processingProgress) / 100} strokeLinecap="round" stroke="currentColor" fill="transparent" r="42" cx="50" cy="50" />
+              </svg>
+              <div className="absolute inset-0 flex items-center justify-center">
+                 <Loader2 className="animate-spin text-orange-600" size={32} />
+              </div>
+            </div>
+            <h2 className="text-3xl font-extrabold text-[#1e293b] mb-4">Đang xử lý...</h2>
+            <p className="text-slate-500 font-medium leading-relaxed mb-8 max-w-xs">{processingText}</p>
+            <div className="w-full h-4 bg-slate-100 rounded-full overflow-hidden mb-6 border border-slate-200 shadow-inner">
+                <div style={{ width: `${processingProgress}%` }} className="h-full bg-orange-600 shadow-[0_0_10px_rgba(234,88,12,0.5)] transition-all duration-300" />
+            </div>
+            <div className="flex justify-between w-full font-bold">
+                <span className="text-slate-400 text-xs uppercase tracking-widest">ĐÃ XÓA: {processedCount} / {checkIns.length} DÒNG...</span>
+                <span className="text-orange-600 text-lg">{processingProgress}%</span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showSuccess && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in"><div className="bg-white p-8 rounded-3xl shadow-2xl flex flex-col items-center max-w-sm mx-4 animate-in zoom-in-95"><div className="w-20 h-20 bg-emerald-100 rounded-full flex items-center justify-center mb-6"><CheckCircle2 size={48} className="text-emerald-500" /></div><h3 className="font-bold text-2xl text-slate-800 text-center mb-2">Thành công!</h3><p className="text-slate-500 text-center font-medium">Cảm ơn bạn đã check-in!</p></div></div>
@@ -372,18 +467,125 @@ const App = () => {
 
         {activeTab === 'admin' && (
           <div className="bg-white rounded-2xl shadow-xl border overflow-hidden min-h-[600px]">{!isAdminLoggedIn ? (
-              <div className="flex flex-col items-center justify-center p-12 h-[500px]"><div className="bg-slate-100 p-4 rounded-full mb-6 text-slate-500"><Lock size={48} /></div><h2 className="text-2xl font-bold text-slate-900 mb-8">Admin Dashboard</h2><button onClick={handleGoogleLogin} className="px-6 py-3 bg-white border shadow-md rounded-lg flex items-center space-x-3 hover:bg-slate-50 transition-all font-bold"><svg className="w-5 h-5" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" /><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" /><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" /><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" /></svg><span>Đăng nhập bằng Google</span></button>{adminError && <p className="text-red-500 mt-4 text-sm font-medium">{adminError}</p>}</div>
+              <div className="flex flex-col items-center justify-center p-12 h-[500px]">
+                <div className="bg-slate-100 p-4 rounded-full mb-6 text-slate-500">
+                    {isAdminDataLoading ? <Loader2 className="animate-spin" size={48} /> : <Lock size={48} />}
+                </div>
+                <h2 className="text-2xl font-bold text-slate-900 mb-8">Admin Dashboard</h2>
+                {isAdminDataLoading ? (
+                    <p className="text-slate-500 animate-pulse font-medium italic">Đang tải dữ liệu admin, vui lòng đợi giây lát...</p>
+                ) : (
+                    <button onClick={handleGoogleLogin} className="px-6 py-3 bg-white border shadow-md rounded-lg flex items-center space-x-3 hover:bg-slate-50 transition-all font-bold"><svg className="w-5 h-5" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" /><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" /><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" /><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" /></svg><span>Đăng nhập bằng Google</span></button>
+                )}
+                {adminError && <p className="text-red-500 mt-6 text-sm font-bold text-center border-t pt-4 border-red-100">{adminError}</p>}
+              </div>
             ) : (
-              <div className="flex flex-col h-full"><div className="p-4 bg-slate-900 text-white flex flex-col sm:flex-row justify-between items-center gap-4"><div className="flex items-center space-x-2 font-bold text-sm"><ShieldCheck size={20} className="text-orange-400" /> <span>ADMIN AREA ({adminEmail})</span></div><div className="flex bg-slate-800 p-1 rounded-lg w-full sm:w-auto overflow-x-auto text-center"><button onClick={() => setAdminSubTab('list')} className={`flex-1 px-4 py-1.5 text-xs font-semibold rounded-md ${adminSubTab === 'list' ? 'bg-[#ea580c]' : 'hover:bg-slate-700'}`}>Danh sách</button><button onClick={() => setAdminSubTab('chart')} className={`flex-1 px-4 py-1.5 text-xs font-semibold rounded-md ${adminSubTab === 'chart' ? 'bg-[#ea580c]' : 'hover:bg-slate-700'}`}>Thống kê</button>{adminEmail === ROOT_ADMIN_EMAIL && <button onClick={() => setAdminSubTab('settings')} className={`flex-1 px-4 py-1.5 text-xs font-semibold rounded-md ${adminSubTab === 'settings' ? 'bg-[#ea580c]' : 'hover:bg-slate-700'}`}>Hệ thống</button>}</div></div>
+              <div className="flex flex-col h-full"><div className="p-4 bg-slate-900 text-white flex flex-col sm:flex-row justify-between items-center gap-4"><div className="flex items-center space-x-2 font-bold text-sm"><ShieldCheck size={20} className="text-orange-400" /> <span>ADMIN AREA ({adminEmail})</span></div><div className="flex bg-slate-800 p-1 rounded-lg w-full sm:w-auto overflow-x-auto text-center"><button onClick={() => setAdminSubTab('list')} className={`flex-1 px-4 py-1.5 text-xs font-semibold rounded-md ${adminSubTab === 'list' ? 'bg-[#ea580c]' : 'hover:bg-slate-700'}`}>Danh sách</button><button onClick={() => setAdminSubTab('chart')} className={`flex-1 px-4 py-1.5 text-xs font-semibold rounded-md ${adminSubTab === 'chart' ? 'bg-[#ea580c]' : 'hover:bg-slate-700'}`}>Thống kê</button>{adminEmail.toLowerCase() === ROOT_ADMIN_EMAIL.toLowerCase() && <button onClick={() => setAdminSubTab('settings')} className={`flex-1 px-4 py-1.5 text-xs font-semibold rounded-md ${adminSubTab === 'settings' ? 'bg-[#ea580c]' : 'hover:bg-slate-700'}`}>Hệ thống</button>}</div></div>
                 <div className="p-6 bg-slate-50 flex-1 overflow-auto">
                     {adminSubTab === 'list' && (
                       <div className="bg-white rounded-xl shadow-sm border overflow-hidden animate-in fade-in"><div className="flex flex-col lg:flex-row justify-between p-4 border-b bg-slate-50 gap-4"><h3 className="font-bold flex items-center text-slate-800 text-sm">Lịch sử Check-in <span className="ml-2 bg-orange-100 text-orange-800 px-3 py-1 rounded-full text-[10px] font-bold">{filteredCheckIns.length} lượt</span></h3><div className="flex flex-wrap items-center gap-3"><div className="relative"><div className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-slate-400"><Search size={14}/></div><input type="text" placeholder="Tìm tên, đơn vị..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="pl-8 pr-3 py-2 text-xs border rounded-md outline-none focus:ring-1 focus:ring-orange-400 w-full sm:w-40" /></div><input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)} className="px-3 py-2 text-xs border rounded-md outline-none text-slate-600" /><select value={filterType} onChange={(e) => setFilterType(e.target.value)} className="px-3 py-2 text-xs border rounded-md outline-none text-slate-600"><option value="all">Tất cả</option><option value="customer_only">Có khách</option><option value="staff_only">Nội bộ</option></select><button onClick={exportToExcel} className="px-4 py-2 bg-emerald-600 text-white text-xs rounded-md flex items-center font-bold shadow-sm hover:bg-emerald-700"><Download size={14} className="mr-1"/> Excel</button></div></div><div className="overflow-x-auto"><table className="w-full text-sm text-left"><thead className="bg-slate-100 font-bold border-b text-slate-600 text-xs"><tr><th className="p-4">Thời gian</th><th className="p-4">CVKD / Đơn vị</th><th className="p-4">Khách hàng</th><th className="p-4 text-center">SL Khách</th><th className="p-4 text-center">Tổng</th><th className="p-4"></th></tr></thead><tbody>{filteredCheckIns.length === 0 ? (<tr><td colSpan={6} className="p-12 text-center text-slate-400 italic">Không tìm thấy dữ liệu</td></tr>) : (filteredCheckIns.map((item: any) => (<tr key={item.firebaseId} className="border-b hover:bg-slate-50 transition-colors text-xs"><td className="p-4 text-slate-500">{item.timestamp}</td><td className="p-4"><div className="font-bold text-slate-900">{item.staffName} <span className="text-slate-400 font-normal">({item.staffPhone})</span></div><div className="text-[#ea580c] font-medium mt-0.5">{item.agencyName}</div></td><td className="p-4">{item.hasCustomer ? (<div><div className="font-bold text-slate-900">{item.customerName} <span className="text-slate-400 font-normal">({item.customerPhone})</span></div><div className="text-[10px] text-slate-500 mt-0.5">{item.customerAge} | {item.customerLocation}</div></div>) : (<span className="text-slate-400 italic bg-slate-100 px-2 py-0.5 rounded border text-[10px]">Nội bộ</span>)}</td><td className="p-4 text-center font-bold text-orange-600">{item.customerCount}</td><td className="p-4 text-center font-extrabold text-[#ea580c]">{(item.staffCount || 0) + (item.customerCount || 0)}</td><td className="p-4 text-right"><button onClick={() => handleDeleteEntry(item.firebaseId)} className="text-slate-300 hover:text-red-500 p-1"><Trash2 size={16}/></button></td></tr>)))}</tbody></table></div></div>
                     )}
+
                     {adminSubTab === 'chart' && (
-                      <div className="bg-white p-6 rounded-xl shadow-sm border animate-in fade-in"><div className="flex flex-col xl:flex-row justify-between items-start xl:items-center mb-8 gap-4"><div className="flex items-center space-x-3"><BarChart3 size={24} className="text-[#ea580c]" /><div><h3 className="font-bold text-lg text-slate-800">Thống kê lưu lượng</h3></div></div><div className="flex flex-wrap items-center gap-3 w-full xl:w-auto"><div className="flex bg-slate-100 p-1 rounded-lg border"><button onClick={() => setChartMetric('role')} className={`px-3 py-1.5 text-[10px] font-bold rounded-md ${chartMetric === 'role' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Vai trò</button><button onClick={() => setChartMetric('age')} className={`px-3 py-1.5 text-[10px] font-bold rounded-md ${chartMetric === 'age' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Độ tuổi</button><button onClick={() => setChartMetric('location')} className={`px-3 py-1.5 text-[10px] font-bold rounded-md ${chartMetric === 'location' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Khu vực</button></div><div className="flex bg-slate-100 p-1 rounded-lg border"><button onClick={() => setChartView('day')} className={`px-3 py-1.5 text-[10px] font-bold rounded-md ${chartView === 'day' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Tuần</button><button onClick={() => setChartView('week')} className={`px-3 py-1.5 text-[10px] font-bold rounded-md ${chartView === 'week' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Tháng</button></div></div></div><div className="bg-slate-900 rounded-2xl pt-12 pr-6 pb-2 pl-2 border border-slate-800 shadow-inner relative overflow-hidden"><div className="absolute top-6 right-6 flex flex-wrap justify-end gap-3 text-[9px] font-bold z-20 bg-slate-800/80 px-2 py-1 rounded border border-slate-700/50 backdrop-blur-sm">{chartMetric === 'role' ? <><div className="flex items-center space-x-1.5 text-orange-400"><div className="w-2 h-2 bg-orange-500 rounded-sm"></div><span>Khách</span></div><div className="flex items-center space-x-1.5 text-cyan-400"><div className="w-2 h-2 bg-cyan-500 rounded-sm"></div><span>CVKD</span></div></> : (chartMetric === 'age' ? AGE_GROUPS : LOCATION_GROUPS).map(g => <div key={g} className="flex items-center space-x-1 text-slate-300"><div className={`w-2 h-2 rounded-sm ${chartMetric === 'age' ? AGE_COLORS[g] : LOCATION_COLORS[g]}`}></div><span>{g}</span></div>)}</div><div className="h-80 flex relative pl-12 pr-4 pb-12 pt-12"><div className="absolute top-12 bottom-12 left-0 w-10 flex flex-col justify-between items-end pr-2 text-[10px] text-slate-400 font-bold">{[maxChartValue, Math.ceil(maxChartValue * 0.75), Math.ceil(maxChartValue * 0.5), Math.ceil(maxChartValue * 0.25), 0].map((v, i) => <span key={i}>{v}</span>)}</div><div className="flex-1 relative border-l-2 border-b-2 border-slate-600"><div className="absolute inset-0 flex flex-col justify-between">{[0,1,2,3,4].map(i => <div key={i} className="w-full border-t border-slate-700/40 border-dashed"></div>)}</div><div className="absolute inset-0 flex items-end justify-around">{chartData.map((d: any) => (<div key={d.key} className="flex flex-col items-center flex-1 h-full relative group justify-end pb-[1px]">{chartMetric === 'role' ? <div className="flex items-end space-x-1"><div style={{ height: `${(d.customers / maxChartValue) * 100}%` }} className="w-4 sm:w-6 bg-orange-500 rounded-t-sm transition-all shadow-[0_0_8px_rgba(234,88,12,0.4)]"></div><div style={{ height: `${(d.staff / maxChartValue) * 100}%` }} className="w-4 sm:w-6 bg-cyan-500 rounded-t-sm transition-all shadow-[0_0_8px_rgba(6,182,212,0.4)]"></div></div> : <div className="flex flex-col-reverse items-center w-6">{(chartMetric === 'age' ? AGE_GROUPS : LOCATION_GROUPS).map(g => { const v = d[chartMetric === 'age' ? g : `loc_${g}`]; if (!v) return null; return <div key={g} style={{ height: `${(v / maxChartValue) * 100}%` }} className={`w-full ${chartMetric === 'age' ? AGE_COLORS[g] : LOCATION_COLORS[g]} border-t border-slate-900/30`}></div> })}</div>}<span className="absolute -bottom-7 text-[9px] font-bold text-slate-400 whitespace-nowrap">{d.label}</span></div>))}</div></div></div></div></div>
+                      <div className="bg-white p-6 rounded-xl shadow-sm border animate-in fade-in">
+                        <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center mb-8 gap-4">
+                          <div className="flex items-center space-x-3">
+                            <BarChart3 size={24} className="text-[#ea580c]" />
+                            <div><h3 className="font-bold text-lg text-slate-800">Thống kê lưu lượng</h3></div>
+                          </div>
+                          
+                          <div className="flex flex-wrap items-center gap-3 w-full xl:w-auto">
+                            {/* Nút lọc Loại */}
+                            <div className="flex bg-slate-100 p-1 rounded-lg border">
+                              <button onClick={() => setChartMetric('role')} className={`px-3 py-1.5 text-[10px] font-bold rounded-md ${chartMetric === 'role' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Vai trò</button>
+                              <button onClick={() => setChartMetric('age')} className={`px-3 py-1.5 text-[10px] font-bold rounded-md ${chartMetric === 'age' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Độ tuổi</button>
+                              <button onClick={() => setChartMetric('location')} className={`px-3 py-1.5 text-[10px] font-bold rounded-md ${chartMetric === 'location' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Khu vực</button>
+                            </div>
+                            
+                            {/* Control Ngày Tháng đã được khôi phục để bạn có thể xem lại dữ liệu cũ */}
+                            <div className="flex items-center space-x-2 bg-slate-100 p-1.5 rounded-lg border">
+                              <button onClick={() => changeFocusDate(chartView === 'day' ? -7 : -30)} className="p-1 hover:bg-white rounded shadow-sm text-slate-500 hover:text-orange-500"><ChevronLeft size={16} /></button>
+                              <input type="date" value={chartFocusDate} onChange={(e) => setChartFocusDate(e.target.value)} className="bg-transparent text-xs font-bold outline-none border-none w-28 text-center text-slate-700" />
+                              <button onClick={() => changeFocusDate(chartView === 'day' ? 7 : 30)} className="p-1 hover:bg-white rounded shadow-sm text-slate-500 hover:text-orange-500"><ChevronRight size={16} /></button>
+                            </div>
+
+                            <div className="flex bg-slate-100 p-1 rounded-lg border">
+                              <button onClick={() => setChartView('day')} className={`px-3 py-1.5 text-[10px] font-bold rounded-md ${chartView === 'day' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Tuần</button>
+                              <button onClick={() => setChartView('week')} className={`px-3 py-1.5 text-[10px] font-bold rounded-md ${chartView === 'week' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Tháng</button>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="bg-slate-900 rounded-2xl pt-12 pr-6 pb-2 pl-2 border border-slate-800 shadow-inner relative overflow-hidden">
+                          {/* Chú thích biểu đồ */}
+                          <div className="absolute top-6 right-6 flex flex-wrap justify-end gap-3 text-[9px] font-bold z-20 bg-slate-800/80 px-2 py-1 rounded border border-slate-700/50 backdrop-blur-sm">
+                            {chartMetric === 'role' ? (
+                              <>
+                                <div className="flex items-center space-x-1.5 text-orange-400"><div className="w-2 h-2 bg-orange-500 rounded-sm"></div><span>Khách</span></div>
+                                <div className="flex items-center space-x-1.5 text-cyan-400"><div className="w-2 h-2 bg-cyan-500 rounded-sm"></div><span>CVKD</span></div>
+                              </>
+                            ) : (
+                              (chartMetric === 'age' ? AGE_GROUPS : LOCATION_GROUPS).map(g => (
+                                <div key={g} className="flex items-center space-x-1 text-slate-300">
+                                  <div className={`w-2 h-2 rounded-sm ${chartMetric === 'age' ? AGE_COLORS[g] : LOCATION_COLORS[g]}`}></div><span>{g}</span>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                          
+                          {/* Khung Biểu đồ chính */}
+                          <div className="h-80 flex relative pl-12 pr-4 pb-12 pt-12">
+                            {/* Trục Y */}
+                            <div className="absolute top-12 bottom-12 left-0 w-10 flex flex-col justify-between items-end pr-2 text-[10px] text-slate-400 font-bold">
+                              {[maxChartValue, Math.ceil(maxChartValue * 0.75), Math.ceil(maxChartValue * 0.5), Math.ceil(maxChartValue * 0.25), 0].map((v, i) => <span key={i}>{v}</span>)}
+                            </div>
+                            
+                            <div className="flex-1 relative border-l-2 border-b-2 border-slate-600">
+                              {/* Grid lines */}
+                              <div className="absolute inset-0 flex flex-col justify-between pointer-events-none">
+                                {[0,1,2,3,4].map(i => <div key={i} className="w-full border-t border-slate-700/40 border-dashed"></div>)}
+                              </div>
+                              
+                              {/* Các cột dữ liệu */}
+                              <div className="absolute inset-0 flex items-end justify-around">
+                                {chartData.map((d: any) => (
+                                  <div key={d.key} className="flex flex-col items-center flex-1 h-full relative group justify-end pb-[1px]">
+                                    
+                                    {/* SỬA LỖI H-FULL Ở ĐÂY */}
+                                    {chartMetric === 'role' ? (
+                                      <div className="flex items-end space-x-1 h-full w-full justify-center">
+                                        <div style={{ height: `${d.customers === 0 ? 0 : Math.max((d.customers / maxChartValue) * 100, 2)}%` }} className="w-4 sm:w-6 bg-orange-500 rounded-t-sm transition-all shadow-[0_0_8px_rgba(234,88,12,0.4)] relative">
+                                            {d.customers > 0 && <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[10px] font-bold text-orange-400">{d.customers}</span>}
+                                        </div>
+                                        <div style={{ height: `${d.staff === 0 ? 0 : Math.max((d.staff / maxChartValue) * 100, 2)}%` }} className="w-4 sm:w-6 bg-cyan-500 rounded-t-sm transition-all shadow-[0_0_8px_rgba(6,182,212,0.4)] relative">
+                                            {d.staff > 0 && <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[10px] font-bold text-cyan-400">{d.staff}</span>}
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <div className="flex flex-col-reverse items-center justify-start h-full w-6">
+                                        {(chartMetric === 'age' ? AGE_GROUPS : LOCATION_GROUPS).map(g => { 
+                                          const v = d[chartMetric === 'age' ? g : `loc_${g}`]; 
+                                          if (!v) return null; 
+                                          return (
+                                            <div key={g} style={{ height: `${(v / maxChartValue) * 100}%` }} className={`w-full ${chartMetric === 'age' ? AGE_COLORS[g] : LOCATION_COLORS[g]} border-t border-slate-900/30 flex items-center justify-center min-h-[4px]`}>
+                                              {(v / maxChartValue) * 100 > 6 && <span className="text-[9px] font-bold text-slate-900">{v}</span>}
+                                            </div>
+                                          ) 
+                                        })}
+                                      </div>
+                                    )}
+                                    <span className="absolute -bottom-7 text-[9px] font-bold text-slate-400 whitespace-nowrap">{d.label}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
                     )}
-                    {adminSubTab === 'settings' && adminEmail === ROOT_ADMIN_EMAIL && (
-                      <div className="animate-in fade-in grid grid-cols-1 lg:grid-cols-2 gap-6"><div className="bg-white p-6 rounded-xl border shadow-sm"><div className="flex items-center space-x-3 mb-6 text-slate-800"><Settings size={20} className="text-slate-500" /><h3 className="font-bold text-lg">Phân quyền Admin (Hệ thống)</h3></div><p className="text-xs text-slate-500 mb-4">* Chú ý: Cấp quyền tại đây để admin có thể đăng nhập trên mọi thiết bị.</p><form onSubmit={handleAddAdmin} className="flex gap-2 mb-6"><input type="email" required value={newAdminEmail} onChange={e => setNewAdminEmail(e.target.value)} placeholder="Email người được cấp quyền..." className="flex-1 px-4 py-2 border rounded-lg text-sm outline-none focus:ring-2 focus:ring-orange-400" /><button type="submit" className="bg-slate-800 text-white px-4 py-2 rounded-lg hover:bg-slate-900 transition-colors"><Plus size={16}/></button></form><div className="space-y-2">{adminEmailsFromDb.map((email: string) => (<div key={email} className="flex justify-between items-center p-3 bg-slate-50 rounded-lg border"><div className="flex items-center space-x-3 text-sm font-bold text-slate-700"><UserIcon size={14} /><span>{email}</span></div>{email !== ROOT_ADMIN_EMAIL && (<button onClick={() => handleRemoveAdmin(email)} className="text-slate-300 hover:text-red-500 p-1 transition-colors"><Trash2 size={16}/></button>)}{email === ROOT_ADMIN_EMAIL && <span className="text-[9px] font-extrabold text-slate-400 uppercase bg-slate-200 px-2 py-1 rounded">Chủ</span>}</div>))}</div></div><div className="bg-white p-6 rounded-xl border shadow-sm"><div className="flex items-center space-x-3 mb-4 text-slate-800"><History size={20} className="text-[#ea580c]" /><h3 className="font-bold text-lg">Bổ sung dữ liệu</h3></div><form onSubmit={handleManualSubmit} className="space-y-4"><div><label className="text-xs font-bold text-slate-700">Ngày</label><input type="date" required value={manualDate} onChange={e => setManualDate(e.target.value)} className="w-full px-3 py-2 border rounded-lg" /></div><div className="grid grid-cols-2 gap-4"><div><label className="text-xs font-bold text-slate-700">CVKD</label><input type="number" min="0" value={manualStaff} onChange={e => setManualStaff(Number(e.target.value))} className="w-full px-3 py-2 border rounded-lg" /></div><div><label className="text-xs font-bold text-slate-700">Khách</label><input type="number" min="0" value={manualCustomer} onChange={e => setManualCustomer(Number(e.target.value))} className="w-full px-3 py-2 border rounded-lg" /></div></div><button type="submit" className="w-full bg-[#ea580c] text-white py-2 rounded-lg font-bold shadow hover:bg-[#c2410c] flex items-center justify-center gap-2"><Plus size={16} /> Thêm</button></form></div><div className="bg-white rounded-xl border border-red-200 shadow-sm overflow-hidden lg:col-span-2"><div className="bg-red-50 p-4 border-b border-red-100 flex items-center space-x-2 text-red-600"><AlertTriangle size={20} /><h3 className="font-bold text-sm text-red-700">DỌN DẸP HỆ THỐNG</h3></div><div className="p-6 flex flex-col sm:flex-row items-center justify-between gap-4"><p className="text-sm text-slate-700 font-medium">Xóa vĩnh viễn <b className="text-red-600">{checkIns.length}</b> dòng dữ liệu check-in.</p><button onClick={handleClearAllData} className="w-full sm:w-auto px-6 py-2.5 bg-red-600 text-white rounded-lg font-bold flex items-center justify-center space-x-2 hover:bg-red-700 shadow-md transition-colors"><Trash2 size={16} /><span>Xóa Sạch Dữ Liệu</span></button></div></div></div>
+
+                    {adminSubTab === 'settings' && adminEmail.toLowerCase() === ROOT_ADMIN_EMAIL.toLowerCase() && (
+                      <div className="animate-in fade-in grid grid-cols-1 lg:grid-cols-2 gap-6"><div className="bg-white p-6 rounded-xl border shadow-sm"><div className="flex items-center space-x-3 mb-6 text-slate-800"><Settings size={20} className="text-slate-500" /><h3 className="font-bold text-lg">Phân quyền Admin (Hệ thống)</h3></div><p className="text-xs text-slate-500 mb-4">* Chú ý: Cấp quyền tại đây để admin có thể đăng nhập trên mọi thiết bị.</p><form onSubmit={handleAddAdmin} className="flex gap-2 mb-6"><input type="email" required value={newAdminEmail} onChange={e => setNewAdminEmail(e.target.value)} placeholder="Email người được cấp quyền..." className="flex-1 px-4 py-2 border rounded-lg text-sm outline-none focus:ring-2 focus:ring-orange-400" /><button type="submit" className="bg-slate-800 text-white px-4 py-2 rounded-lg hover:bg-slate-900 transition-colors"><Plus size={16}/></button></form><div className="space-y-2">{adminEmailsFromDb.map((email: string) => (<div key={email} className="flex justify-between items-center p-3 bg-slate-50 rounded-lg border"><div className="flex items-center space-x-3 text-sm font-bold text-slate-700"><UserIcon size={14} /><span>{email}</span></div>{email.toLowerCase() !== ROOT_ADMIN_EMAIL.toLowerCase() && (<button onClick={() => handleRemoveAdmin(email)} className="text-slate-300 hover:text-red-500 p-1 transition-colors"><Trash2 size={16}/></button>)}{email.toLowerCase() === ROOT_ADMIN_EMAIL.toLowerCase() && <span className="text-[9px] font-extrabold text-slate-400 uppercase bg-slate-200 px-2 py-1 rounded">Chủ</span>}</div>))}</div></div><div className="bg-white p-6 rounded-xl border shadow-sm"><div className="flex items-center space-x-3 mb-4 text-slate-800"><History size={20} className="text-[#ea580c]" /><h3 className="font-bold text-lg">Bổ sung dữ liệu</h3></div><form onSubmit={handleManualSubmit} className="space-y-4"><div><label className="text-xs font-bold text-slate-700">Ngày</label><input type="date" required value={manualDate} onChange={e => setManualDate(e.target.value)} className="w-full px-3 py-2 border rounded-lg" /></div><div className="grid grid-cols-2 gap-4"><div><label className="text-xs font-bold text-slate-700">CVKD</label><input type="number" min="0" value={manualStaff} onChange={e => setManualStaff(Number(e.target.value))} className="w-full px-3 py-2 border rounded-lg" /></div><div><label className="text-xs font-bold text-slate-700">Khách</label><input type="number" min="0" value={manualCustomer} onChange={e => setManualCustomer(Number(e.target.value))} className="w-full px-3 py-2 border rounded-lg" /></div></div><button type="submit" className="w-full bg-[#ea580c] text-white py-2 rounded-lg font-bold shadow hover:bg-[#c2410c] flex items-center justify-center gap-2"><Plus size={16} /> Thêm</button></form></div><div className="bg-white rounded-xl border border-red-200 shadow-sm overflow-hidden lg:col-span-2"><div className="bg-red-50 p-4 border-b border-red-100 flex items-center space-x-2 text-red-600"><AlertTriangle size={20} /><h3 className="font-bold text-sm text-red-700">DỌN DẸP HỆ THỐNG</h3></div><div className="p-6 flex flex-col sm:flex-row items-center justify-between gap-4"><p className="text-sm text-slate-700 font-medium">Xóa vĩnh viễn <b className="text-red-600">{checkIns.length}</b> dòng dữ liệu check-in.</p><button onClick={handleClearAllData} className="w-full sm:w-auto px-6 py-2.5 bg-red-600 text-white rounded-lg font-bold flex items-center justify-center space-x-2 hover:bg-red-700 shadow-md transition-colors"><Trash2 size={16} /><span>Xóa Sạch Dữ Liệu</span></button></div></div></div>
                     )}
                 </div>
               </div>
